@@ -111,6 +111,16 @@ Use your real domain:
 PORT=3000
 PUBLIC_BASE_URL=https://sms.example.com
 DATA_DIR=data
+DATABASE_URL=postgresql://telnyx:telnyx@postgres:5432/telnyx
+
+POSTGRES_DB=telnyx
+POSTGRES_USER=telnyx
+POSTGRES_PASSWORD=change_this_password
+POSTGRES_PORT=5432
+
+PGADMIN_DEFAULT_EMAIL=admin@example.com
+PGADMIN_DEFAULT_PASSWORD=change_this_password
+PGADMIN_PORT=5050
 
 BITRIX_CLIENT_ID=
 BITRIX_CLIENT_SECRET=
@@ -139,7 +149,7 @@ Check logs:
 docker compose logs -f
 ```
 
-The app listens internally on port `3000`.
+The app listens internally on port `3000`. Postgres and pgAdmin also start with the same Compose stack.
 
 ## 8. Configure Nginx Reverse Proxy
 
@@ -174,6 +184,8 @@ ln -s /etc/nginx/sites-available/telnyx-bitrix /etc/nginx/sites-enabled/telnyx-b
 nginx -t
 systemctl reload nginx
 ```
+
+If you need a browser-based database admin UI, pgAdmin is available on port `5050` inside the Compose stack. Prefer keeping it private to the Droplet and only exposing it through a protected tunnel or an additional locked-down Nginx site if you truly need remote access.
 
 ## 9. Enable HTTPS
 
@@ -353,6 +365,8 @@ The file `data/bitrix-auth.json` contains Bitrix OAuth tokens. Treat it as sensi
 ## Production Notes
 
 - Keep `.env` and `data/bitrix-auth.json` private.
+- Telnyx webhook records are stored in the Postgres `telnyx_webhooks` table.
 - Use regular Droplet snapshots or back up the `data` directory.
-- Consider moving in-memory idempotency and chat mapping to Redis/Postgres if you expect high volume or multiple app replicas.
+- Back up the Postgres volume if you need webhook history retained.
+- Consider moving in-memory idempotency and chat mapping to Redis/shared state if you expect high volume or multiple app replicas.
 - Do not run multiple replicas of this app without shared storage for dedupe and phone mapping.

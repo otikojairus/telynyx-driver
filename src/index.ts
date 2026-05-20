@@ -13,6 +13,13 @@ import {
   sendSmsThroughTelnyx,
   sendToBitrixOpenChannel
 } from "./clients";
+import { initializeDatabase } from "./database";
+import {
+  forwardTelnyxWebhookRecord,
+  listTelnyxWebhookRecords,
+  saveTelnyxWebhookRecord,
+  TelnyxWebhookRecord
+} from "./telnyxWebhookStore";
 import { writeBitrixTokens } from "./tokenStore";
 import { BitrixInstallRequest, BitrixOutboundEvent, TelnyxWebhook } from "./types";
 
@@ -136,6 +143,42 @@ function cleanBitrixMessageText(text: string): string {
     .trim();
 
   return cleaned.replace(/^[^\n:]{1,80}:\s*\n/, "").trim();
+}
+
+function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>): TelnyxWebhookRecord {
+  const eventId =
+    body && typeof body === "object" && "data" in body
+      ? ((body as TelnyxWebhook).data?.id ?? "")
+      : "";
+  const payload =
+    body && typeof body === "object" && "data" in body
+      ? (body as TelnyxWebhook).data?.payload
+      : undefined;
+
+  return {
+    id: eventId || `telnyx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    eventId,
+    eventType:
+      body && typeof body === "object" && "data" in body
+        ? ((body as TelnyxWebhook).data?.event_type ?? "")
+        : "",
+    receivedAt: new Date().toISOString(),
+    from: payload?.from?.phone_number ?? "",
+    to: payload?.to?.[0]?.phone_number ?? "",
+    text: payload?.text ?? "",
+    status: "ignored",
+    rawBody: body
+  };
+}
+
+async function persistTelnyxWebhookRecord(record: TelnyxWebhookRecord): Promise<void> {
+  record.outboundForward = await forwardTelnyxWebhookRecord(record);
+  saveTelnyxWebhookRecord(record);
+
+  const outboundForward = record.outboundForward;
+  if (outboundForward && outboundForward.enabled && !outboundForward.delivered) {
+    console.error("Failed to forward stored Telnyx webhook to outbound webhook", outboundForward);
+  }
 }
 
 function rememberBitrixSession(response: Awaited<ReturnType<typeof sendToBitrixOpenChannel>>) {
@@ -301,6 +344,17 @@ app.get("/debug/bitrix/latest-history", async (_req: Request, res: Response) => 
   }
 });
 
+app.get("/debug/telnyx/webhooks", async (req: Request, res: Response) => {
+  const rawLimit = Number(req.query.limit ?? 50);
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
+  try {
+    return res.status(200).json({ ok: true, records: await listTelnyxWebhookRecords(limit) });
+  } catch (error) {
+    console.error("Failed to read stored Telnyx webhooks", error);
+    return res.status(500).json({ ok: false, error: "Telnyx webhook history failed" });
+  }
+});
+
 app.post("/sms/send", async (req: Request, res: Response) => {
   const { to, text } = req.body as { to?: string; text?: string };
 
@@ -343,21 +397,31 @@ app.post("/debug/bitrix/test-message", async (req: Request, res: Response) => {
 });
 
 app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
+  const body = req.body as TelnyxWebhook;
+  const record = createTelnyxWebhookRecord(body);
+
   if (!verifyTelnyxSignature(req)) {
+    record.status = "invalid_signature";
+    await persistTelnyxWebhookRecord(record);
     return res.status(401).json({ ok: false, error: "Invalid Telnyx signature" });
   }
 
-  const body = req.body as TelnyxWebhook;
   const eventType = body.data?.event_type;
   if (eventType !== "message.received") {
+    record.status = "ignored";
+    await persistTelnyxWebhookRecord(record);
     return res.status(200).json({ ok: true, ignored: true });
   }
 
   const eventId = body.data?.id ?? "";
   if (!eventId) {
+    record.status = "invalid_payload";
+    await persistTelnyxWebhookRecord(record);
     return res.status(400).json({ ok: false, error: "Missing event id" });
   }
   if (isDuplicate(processedTelnyxEvents, eventId)) {
+    record.status = "duplicate";
+    await persistTelnyxWebhookRecord(record);
     return res.status(200).json({ ok: true, duplicate: true });
   }
 
@@ -368,6 +432,8 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   const to = payload?.to?.[0]?.phone_number ?? config.telnyxFromNumber;
 
   if (!from || !text) {
+    record.status = "invalid_payload";
+    await persistTelnyxWebhookRecord(record);
     return res.status(400).json({ ok: false, error: "Missing from or text" });
   }
 
@@ -388,9 +454,19 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
     rememberBitrixSession(bitrixResponse);
     await answerBitrixSessionIfPossible(bitrixResponse);
 
+    record.status = "forwarded_to_bitrix";
+    record.bitrix = { ok: true };
+    await persistTelnyxWebhookRecord(record);
+
     return res.status(200).json({ ok: true });
   } catch (error) {
     console.error("Failed to forward Telnyx inbound message", error);
+    record.status = "bitrix_failed";
+    record.bitrix = {
+      ok: false,
+      error: error instanceof Error ? error.message : "Unknown Bitrix forwarding error"
+    };
+    await persistTelnyxWebhookRecord(record);
     return res.status(500).json({ ok: false, error: "Forwarding failed" });
   }
 });
@@ -483,6 +559,15 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
   }
 });
 
-app.listen(config.port, () => {
-  console.log(`Telnyx-Bitrix middleware listening on port ${config.port}`);
+async function startServer() {
+  await initializeDatabase();
+
+  app.listen(config.port, () => {
+    console.log(`Telnyx-Bitrix middleware listening on port ${config.port}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start middleware", error);
+  process.exit(1);
 });

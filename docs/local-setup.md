@@ -49,6 +49,16 @@ Fill it like this:
 PORT=3000
 PUBLIC_BASE_URL=https://abc123.ngrok-free.app
 DATA_DIR=data
+DATABASE_URL=postgresql://telnyx:telnyx@postgres:5432/telnyx
+
+POSTGRES_DB=telnyx
+POSTGRES_USER=telnyx
+POSTGRES_PASSWORD=telnyx
+POSTGRES_PORT=5432
+
+PGADMIN_DEFAULT_EMAIL=admin@example.com
+PGADMIN_DEFAULT_PASSWORD=admin123
+PGADMIN_PORT=5050
 
 BITRIX_CLIENT_ID=
 BITRIX_CLIENT_SECRET=
@@ -114,6 +124,15 @@ docker compose up
 
 Keep this terminal open so you can see logs.
 
+Optional database UI:
+
+```text
+http://localhost:5050
+```
+
+pgAdmin login uses `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD`.
+When adding the Postgres server inside pgAdmin, use host `postgres`, port `5432`, and the `POSTGRES_*` credentials from `.env`.
+
 ## 5. Trigger Bitrix Installation
 
 Return to the Bitrix Local Application screen and click `Save` again.
@@ -164,6 +183,12 @@ https://abc123.ngrok-free.app/webhooks/telnyx
 ```
 
 Make sure your SMS number is assigned to that Messaging Profile.
+
+If you want each inbound Telnyx webhook copied to another system after it is stored in Postgres, set:
+
+```env
+TELNYX_FORWARD_WEBHOOK_URL=https://your-app.example.com/webhooks/telnyx
+```
 
 ## 8. Test Inbound SMS
 
@@ -233,6 +258,12 @@ Read the latest Bitrix Open Line session history:
 
 ```bash
 curl http://localhost:3000/debug/bitrix/latest-history
+```
+
+Read stored Telnyx webhook rows:
+
+```bash
+curl http://localhost:3000/debug/telnyx/webhooks
 ```
 
 Watch logs:
