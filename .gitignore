@@ -1,0 +1,12 @@
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Local data and runtime files
+data/
+*.log
+
+# Dependencies and build output
+node_modules/
+dist/

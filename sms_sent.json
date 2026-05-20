@@ -1,0 +1,66 @@
+{
+  "data": {
+    "event_type": "message.finalized",
+    "id": "d93acd46-b2b5-47cd-a634-73d8daab982a",
+    "occurred_at": "2026-05-19T15:28:31.552+00:00",
+    "payload": {
+      "cc": [],
+      "completed_at": "2026-05-19T15:28:31.551+00:00",
+      "cost": {
+        "amount": "0.0400",
+        "currency": "USD"
+      },
+      "cost_breakdown": {
+        "carrier_fee": {
+          "amount": "0",
+          "currency": "USD"
+        },
+        "rate": {
+          "amount": "0.0400",
+          "currency": "USD"
+        }
+      },
+      "direction": "outbound",
+      "encoding": "UCS-2",
+      "errors": [],
+      "from": {
+        "carrier": "Telnyx",
+        "line_type": "Wireless",
+        "phone_number": "PROOFGROUP"
+      },
+      "id": "40319e40-da4c-470a-be45-08bcba0e08f9",
+      "media": [],
+      "messaging_profile_id": "40019e40-b72e-4009-a049-e3be3c726dbf",
+      "num_chars": 18,
+      "organization_id": "5f3070eb-a46b-453a-b9b1-3e7dbe366394",
+      "parts": 1,
+      "received_at": "2026-05-19T15:28:28.800+00:00",
+      "record_type": "message",
+      "sent_at": "2026-05-19T15:28:29.109+00:00",
+      "smart_encoding_applied": false,
+      "tags": [],
+      "tcr_campaign_billable": false,
+      "tcr_campaign_id": null,
+      "tcr_campaign_registered": null,
+      "text": "Jairus saying hi 🚀",
+      "to": [
+        {
+          "carrier": "Safaricom Limited",
+          "line_type": "",
+          "phone_number": "+254722753364",
+          "status": "delivered"
+        }
+      ],
+      "type": "SMS",
+      "valid_until": "2026-05-19T16:28:28.800+00:00",
+      "wait_seconds": null,
+      "webhook_failover_url": "https://webhook.site/231934fb-4e29-4a6f-9562-a889a7bb06a0",
+      "webhook_url": "https://webhook.site/231934fb-4e29-4a6f-9562-a889a7bb06a0"
+    },
+    "record_type": "event"
+  },
+  "meta": {
+    "attempt": 1,
+    "delivered_to": "https://webhook.site/231934fb-4e29-4a6f-9562-a889a7bb06a0"
+  }
+}

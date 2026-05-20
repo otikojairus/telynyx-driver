@@ -1,0 +1,63 @@
+{
+  "data": {
+    "event_type": "message.received",
+    "id": "d1f736db-57fa-41e0-b79f-bd7ead06da47",
+    "occurred_at": "2026-05-19T15:36:42.679+00:00",
+    "payload": {
+      "autoresponse_type": null,
+      "cc": [],
+      "completed_at": null,
+      "cost": {
+        "amount": "0.0055",
+        "currency": "USD"
+      },
+      "cost_breakdown": {
+        "carrier_fee": {
+          "amount": "0.00000",
+          "currency": "USD"
+        },
+        "rate": {
+          "amount": "0.00550",
+          "currency": "USD"
+        }
+      },
+      "direction": "inbound",
+      "encoding": "GSM-7",
+      "errors": [],
+      "from": {
+        "carrier": "",
+        "line_type": "",
+        "phone_number": "+254722753364"
+      },
+      "id": "4bdcbe46-804c-447c-bac2-c4f3bd3f81bd",
+      "is_spam": false,
+      "media": [],
+      "messaging_profile_id": "40019e40-b72e-4009-a049-e3be3c726dbf",
+      "organization_id": "5f3070eb-a46b-453a-b9b1-3e7dbe366394",
+      "parts": 1,
+      "received_at": "2026-05-19T15:36:42.537+00:00",
+      "record_type": "message",
+      "sent_at": null,
+      "subject": "",
+      "tags": [],
+      "text": "Hey there Jairus testing",
+      "to": [
+        {
+          "carrier": "Telnyx",
+          "line_type": "Wireless",
+          "phone_number": "+18447500107",
+          "status": "webhook_delivered"
+        }
+      ],
+      "type": "SMS",
+      "valid_until": null,
+      "webhook_failover_url": "https://webhook.site/231934fb-4e29-4a6f-9562-a889a7bb06a0",
+      "webhook_url": "https://webhook.site/231934fb-4e29-4a6f-9562-a889a7bb06a0"
+    },
+    "record_type": "event"
+  },
+  "meta": {
+    "attempt": 1,
+    "delivered_to": "https://webhook.site/231934fb-4e29-4a6f-9562-a889a7bb06a0"
+  }
+}
