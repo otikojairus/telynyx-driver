@@ -145,7 +145,40 @@ function cleanBitrixMessageText(text: string): string {
   return cleaned.replace(/^[^\n:]{1,80}:\s*\n/, "").trim();
 }
 
+function readTelnyxPhone(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return readTelnyxPhone(value[0]);
+  }
+
+  if (value && typeof value === "object") {
+    const candidate = (value as Record<string, unknown>).phone_number;
+    return typeof candidate === "string" ? candidate : "";
+  }
+
+  return "";
+}
+
+function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventChannel"] {
+  if (eventType === "message.received" || eventType.startsWith("message.")) {
+    return "sms";
+  }
+
+  if (eventType.startsWith("call.")) {
+    return "call";
+  }
+
+  return "other";
+}
+
 function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>): TelnyxWebhookRecord {
+  const eventType =
+    body && typeof body === "object" && "data" in body
+      ? ((body as TelnyxWebhook).data?.event_type ?? "")
+      : "";
   const eventId =
     body && typeof body === "object" && "data" in body
       ? ((body as TelnyxWebhook).data?.id ?? "")
@@ -158,13 +191,11 @@ function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>
   return {
     id: eventId || `telnyx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     eventId,
-    eventType:
-      body && typeof body === "object" && "data" in body
-        ? ((body as TelnyxWebhook).data?.event_type ?? "")
-        : "",
+    eventType,
+    eventChannel: getTelnyxEventChannel(eventType),
     receivedAt: new Date().toISOString(),
-    from: payload?.from?.phone_number ?? "",
-    to: payload?.to?.[0]?.phone_number ?? "",
+    from: readTelnyxPhone(payload?.from),
+    to: readTelnyxPhone(payload?.to),
     text: payload?.text ?? "",
     status: "ignored",
     rawBody: body
@@ -173,7 +204,7 @@ function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>
 
 async function persistTelnyxWebhookRecord(record: TelnyxWebhookRecord): Promise<void> {
   record.outboundForward = await forwardTelnyxWebhookRecord(record);
-  saveTelnyxWebhookRecord(record);
+  await saveTelnyxWebhookRecord(record);
 
   const outboundForward = record.outboundForward;
   if (outboundForward && outboundForward.enabled && !outboundForward.delivered) {
@@ -407,6 +438,28 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   }
 
   const eventType = body.data?.event_type;
+  if (!eventType) {
+    record.status = "invalid_payload";
+    await persistTelnyxWebhookRecord(record);
+    return res.status(400).json({ ok: false, error: "Missing event type" });
+  }
+
+  if (record.eventChannel === "call") {
+    record.status = "stored_call_event";
+    await persistTelnyxWebhookRecord(record);
+
+    if (record.outboundForward?.enabled) {
+      record.status = record.outboundForward.delivered ? "forwarded_call_event" : "call_forward_failed";
+      await saveTelnyxWebhookRecord(record);
+    }
+
+    return res.status(200).json({
+      ok: true,
+      callEvent: true,
+      forwarded: Boolean(record.outboundForward?.enabled && record.outboundForward.delivered)
+    });
+  }
+
   if (eventType !== "message.received") {
     record.status = "ignored";
     await persistTelnyxWebhookRecord(record);
@@ -428,8 +481,8 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   const payload = body.data?.payload;
   const messageId = payload?.id ?? eventId;
   const text = payload?.text ?? "";
-  const from = payload?.from?.phone_number ?? "";
-  const to = payload?.to?.[0]?.phone_number ?? config.telnyxFromNumber;
+  const from = readTelnyxPhone(payload?.from);
+  const to = readTelnyxPhone(payload?.to) || config.telnyxFromNumber;
 
   if (!from || !text) {
     record.status = "invalid_payload";

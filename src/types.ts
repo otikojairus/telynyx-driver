@@ -9,14 +9,36 @@ export interface TelnyxWebhook {
       direction?: string;
       received_at?: string;
       sent_at?: string;
+      call_leg_id?: string;
+      call_control_id?: string;
+      state?: string;
       from?: {
         phone_number?: string;
-      };
+      } | string;
       to?: Array<{
         phone_number?: string;
-      }>;
-    };
+      }> | {
+        phone_number?: string;
+      } | string;
+      client_state?: string;
+      metadata?: Record<string, unknown>;
+    } & Record<string, unknown>;
   };
+}
+
+export interface TelnyxCallPayloadLike {
+  from?: {
+    phone_number?: string;
+      };
+  to?: Array<{
+    phone_number?: string;
+  }> | {
+    phone_number?: string;
+  };
+  text?: string;
+  call_leg_id?: string;
+  call_control_id?: string;
+  state?: string;
 }
 
 export interface BitrixSendMessageResponse {

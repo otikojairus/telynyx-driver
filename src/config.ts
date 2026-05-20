@@ -25,5 +25,6 @@ export const config = {
   telnyxFromNumber: requireEnv("TELNYX_FROM_NUMBER"),
   telnyxSignatureSecret: process.env.TELNYX_SIGNATURE_SECRET ?? "",
   telnyxForwardWebhookUrl: process.env.TELNYX_FORWARD_WEBHOOK_URL ?? "",
+  telnyxCallForwardWebhookUrl: process.env.TELNYX_CALL_FORWARD_WEBHOOK_URL ?? "",
   telnyxWebhookStoreLimit: Number(process.env.TELNYX_WEBHOOK_STORE_LIMIT ?? 1000)
 };

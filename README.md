@@ -61,6 +61,7 @@ BITRIX_LINE_ID=2
 TELNYX_API_KEY=your_telnyx_api_key
 TELNYX_FROM_NUMBER=+18447500107
 TELNYX_FORWARD_WEBHOOK_URL=
+TELNYX_CALL_FORWARD_WEBHOOK_URL=
 TELNYX_WEBHOOK_STORE_LIMIT=1000
 ```
 
@@ -117,10 +118,16 @@ Set the Telnyx Messaging Profile webhook URL to:
 ${PUBLIC_BASE_URL}/webhooks/telnyx
 ```
 
-If you also want every Telnyx webhook stored in Postgres and mirrored to your own system, set:
+If you also want inbound Telnyx SMS webhooks stored in Postgres and mirrored to your own system, set:
 
 ```text
 TELNYX_FORWARD_WEBHOOK_URL=https://your-app.example.com/webhooks/telnyx
+```
+
+If you also want Telnyx call events stored and mirrored to a separate system, set:
+
+```text
+TELNYX_CALL_FORWARD_WEBHOOK_URL=https://your-app.example.com/webhooks/telnyx-calls
 ```
 
 The middleware stores webhook records in the `telnyx_webhooks` Postgres table.

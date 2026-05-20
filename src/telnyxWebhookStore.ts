@@ -7,6 +7,7 @@ export interface TelnyxWebhookRecord {
   id: string;
   eventId: string;
   eventType: string;
+  eventChannel: "sms" | "call" | "other";
   receivedAt: string;
   from: string;
   to: string;
@@ -17,7 +18,10 @@ export interface TelnyxWebhookRecord {
     | "invalid_payload"
     | "duplicate"
     | "forwarded_to_bitrix"
-    | "bitrix_failed";
+    | "bitrix_failed"
+    | "stored_call_event"
+    | "forwarded_call_event"
+    | "call_forward_failed";
   rawBody: TelnyxWebhook | Record<string, unknown>;
   bitrix?: {
     ok: boolean;
@@ -37,6 +41,7 @@ interface TelnyxWebhookRow {
   id: string;
   event_id: string;
   event_type: string;
+  event_channel: TelnyxWebhookRecord["eventChannel"];
   received_at: string | Date;
   phone_from: string;
   phone_to: string;
@@ -52,6 +57,7 @@ function mapRowToRecord(row: TelnyxWebhookRow): TelnyxWebhookRecord {
     id: row.id,
     eventId: row.event_id,
     eventType: row.event_type,
+    eventChannel: row.event_channel,
     receivedAt:
       row.received_at instanceof Date ? row.received_at.toISOString() : new Date(row.received_at).toISOString(),
     from: row.phone_from,
@@ -71,6 +77,7 @@ export async function saveTelnyxWebhookRecord(record: TelnyxWebhookRecord): Prom
         id,
         event_id,
         event_type,
+        event_channel,
         received_at,
         phone_from,
         phone_to,
@@ -79,10 +86,11 @@ export async function saveTelnyxWebhookRecord(record: TelnyxWebhookRecord): Prom
         raw_body,
         bitrix,
         outbound_forward
-      ) VALUES ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb)
+      ) VALUES ($1, $2, $3, $4, $5::timestamptz, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb)
       ON CONFLICT (id) DO UPDATE SET
         event_id = EXCLUDED.event_id,
         event_type = EXCLUDED.event_type,
+        event_channel = EXCLUDED.event_channel,
         received_at = EXCLUDED.received_at,
         phone_from = EXCLUDED.phone_from,
         phone_to = EXCLUDED.phone_to,
@@ -96,6 +104,7 @@ export async function saveTelnyxWebhookRecord(record: TelnyxWebhookRecord): Prom
       record.id,
       record.eventId,
       record.eventType,
+      record.eventChannel,
       record.receivedAt,
       record.from,
       record.to,
@@ -129,6 +138,7 @@ export async function listTelnyxWebhookRecords(limit = 50): Promise<TelnyxWebhoo
         id,
         event_id,
         event_type,
+        event_channel,
         received_at,
         phone_from,
         phone_to,
@@ -150,7 +160,10 @@ export async function listTelnyxWebhookRecords(limit = 50): Promise<TelnyxWebhoo
 export async function forwardTelnyxWebhookRecord(
   record: TelnyxWebhookRecord
 ): Promise<TelnyxWebhookRecord["outboundForward"]> {
-  if (!config.telnyxForwardWebhookUrl) {
+  const targetUrl =
+    record.eventChannel === "call" ? config.telnyxCallForwardWebhookUrl : config.telnyxForwardWebhookUrl;
+
+  if (!targetUrl) {
     return {
       enabled: false,
       delivered: false
@@ -159,7 +172,7 @@ export async function forwardTelnyxWebhookRecord(
 
   try {
     const response = await axios.post(
-      config.telnyxForwardWebhookUrl,
+      targetUrl,
       {
         source: "telnyx-webhook",
         record
@@ -175,7 +188,7 @@ export async function forwardTelnyxWebhookRecord(
     return {
       enabled: true,
       delivered: true,
-      url: config.telnyxForwardWebhookUrl,
+      url: targetUrl,
       statusCode: response.status,
       attemptedAt: new Date().toISOString()
     };
@@ -184,19 +197,19 @@ export async function forwardTelnyxWebhookRecord(
       return {
         enabled: true,
         delivered: false,
-        url: config.telnyxForwardWebhookUrl,
+        url: targetUrl,
         statusCode: error.response?.status,
         error: error.message,
         attemptedAt: new Date().toISOString()
       };
     }
 
-    return {
-      enabled: true,
-      delivered: false,
-      url: config.telnyxForwardWebhookUrl,
-      error: error instanceof Error ? error.message : "Unknown forwarding error",
-      attemptedAt: new Date().toISOString()
-    };
+      return {
+        enabled: true,
+        delivered: false,
+        url: targetUrl,
+        error: error instanceof Error ? error.message : "Unknown forwarding error",
+        attemptedAt: new Date().toISOString()
+      };
   }
 }

@@ -11,6 +11,7 @@ export async function initializeDatabase(): Promise<void> {
       id TEXT PRIMARY KEY,
       event_id TEXT NOT NULL,
       event_type TEXT NOT NULL,
+      event_channel TEXT NOT NULL DEFAULT 'other',
       received_at TIMESTAMPTZ NOT NULL,
       phone_from TEXT NOT NULL,
       phone_to TEXT NOT NULL,
@@ -20,6 +21,11 @@ export async function initializeDatabase(): Promise<void> {
       bitrix JSONB,
       outbound_forward JSONB
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE telnyx_webhooks
+    ADD COLUMN IF NOT EXISTS event_channel TEXT NOT NULL DEFAULT 'other'
   `);
 
   await pool.query(`
