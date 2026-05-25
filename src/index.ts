@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import axios from "axios";
 import express, { Request, Response } from "express";
 import { config } from "./config";
 import { forwardBitrixDealRecord, saveBitrixDealRecord } from "./bitrixDealStore";
@@ -48,6 +49,7 @@ const processedTelnyxEvents = new Set<string>();
 const processedBitrixMessageIds = new Set<string>();
 const phoneByChatId = new Map<string, string>();
 const phoneByUserId = new Map<string, string>();
+const thirdPartyReplyRouteByPhone = new Map<string, { webhookUrl: string; deliverSmsReplies: boolean }>();
 let lastBitrixSession: { sessionId?: string | number; chatId?: string | number } = {};
 const recentBitrixReplyWebhooks: Array<{
   receivedAt: string;
@@ -100,6 +102,14 @@ function verifyInboundDealSecret(req: Request): boolean {
   return incoming === config.inboundDealWebhookSecret;
 }
 
+function verifyThirdPartyWebhookSecret(req: Request): boolean {
+  if (!config.thirdPartyWebhookSecret) {
+    return true;
+  }
+  const incoming = String(req.headers["x-thirdparty-secret"] ?? "");
+  return incoming === config.thirdPartyWebhookSecret;
+}
+
 function verifyTelnyxSignature(req: Request): boolean {
   if (!config.telnyxSignatureSecret) {
     return true;
@@ -131,7 +141,7 @@ function verifyTelnyxSignature(req: Request): boolean {
   }
 }
 
-function trimMap(map: Map<string, string>, maxEntries = 5000): void {
+function trimMap<T>(map: Map<string, T>, maxEntries = 5000): void {
   if (map.size <= maxEntries) {
     return;
   }
@@ -390,6 +400,38 @@ function normalizePhoneForSms(value: string): string {
   }
 
   return `+${digits}`;
+}
+
+async function forwardBitrixReplyToThirdParty(params: {
+  webhookUrl: string;
+  phone: string;
+  text: string;
+  messageId: string;
+  chatId: string;
+  bitrixUserId: string;
+  rawEvent: unknown;
+}) {
+  const response = await axios.post(
+    params.webhookUrl,
+    {
+      source: "bitrix-reply-webhook",
+      receivedAt: new Date().toISOString(),
+      phone: params.phone,
+      text: params.text,
+      messageId: params.messageId,
+      chatId: params.chatId,
+      bitrixUserId: params.bitrixUserId,
+      event: params.rawEvent
+    },
+    {
+      timeout: 15000,
+      headers: {
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  return response.status;
 }
 
 function buildLeadCustomerName(lead: Record<string, unknown>): string {
@@ -679,6 +721,62 @@ app.post("/sms/send", async (req: Request, res: Response) => {
   }
 });
 
+app.post("/webhooks/inbound/bitrix/channel/message", async (req: Request, res: Response) => {
+  if (!verifyThirdPartyWebhookSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid third-party webhook secret" });
+  }
+
+  const body = req.body as {
+    customerPhone?: string;
+    text?: string;
+    replyWebhookUrl?: string;
+    deliverSmsReplies?: boolean;
+    destinationPhone?: string;
+    externalMessageId?: string;
+  };
+
+  const customerPhone = normalizePhoneForSms(String(body.customerPhone ?? ""));
+  const text = String(body.text ?? "").trim();
+  const replyWebhookUrl = String(body.replyWebhookUrl ?? "").trim();
+
+  if (!customerPhone || !text || !replyWebhookUrl) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing customerPhone, text, or replyWebhookUrl"
+    });
+  }
+
+  try {
+    thirdPartyReplyRouteByPhone.set(customerPhone, {
+      webhookUrl: replyWebhookUrl,
+      deliverSmsReplies: Boolean(body.deliverSmsReplies)
+    });
+    trimMap(thirdPartyReplyRouteByPhone);
+
+    const bitrixResponse = await sendToBitrixOpenChannel({
+      sourcePhone: customerPhone,
+      destinationPhone: String(body.destinationPhone ?? config.telnyxFromNumber),
+      text,
+      externalMessageId: String(body.externalMessageId ?? `thirdparty-${Date.now()}`),
+      eventTimestamp: new Date().toISOString()
+    });
+    rememberBitrixSession(bitrixResponse);
+    const answer = await answerBitrixSessionIfPossible(bitrixResponse);
+
+    return res.status(200).json({
+      ok: true,
+      customerPhone,
+      replyWebhookUrl,
+      deliverSmsReplies: Boolean(body.deliverSmsReplies),
+      bitrix: bitrixResponse,
+      answer
+    });
+  } catch (error) {
+    console.error("Failed to send third-party message into Bitrix channel", error);
+    return res.status(500).json({ ok: false, error: "Third-party channel send failed" });
+  }
+});
+
 app.post("/debug/bitrix/test-message", async (req: Request, res: Response) => {
   const {
     from = "+15550001111",
@@ -900,6 +998,40 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
       body: req.body
     });
     return res.status(200).json({ ok: true, duplicate: true });
+  }
+
+  const thirdPartyRoute = thirdPartyReplyRouteByPhone.get(phone);
+  if (thirdPartyRoute) {
+    try {
+      const callbackStatus = await forwardBitrixReplyToThirdParty({
+        webhookUrl: thirdPartyRoute.webhookUrl,
+        phone,
+        text,
+        messageId,
+        chatId,
+        bitrixUserId,
+        rawEvent: req.body
+      });
+
+      if (!thirdPartyRoute.deliverSmsReplies) {
+        rememberBitrixReplyWebhook({
+          status: "sent",
+          event: event.event,
+          messageId,
+          chatId,
+          bitrixUserId,
+          phone,
+          text,
+          body: req.body
+        });
+        return res.status(200).json({ ok: true, forwardedToThirdParty: true, callbackStatus });
+      }
+    } catch (error) {
+      if (!thirdPartyRoute.deliverSmsReplies) {
+        console.error("Failed to forward Bitrix reply to third-party webhook", error);
+        return res.status(502).json({ ok: false, error: "Third-party callback failed" });
+      }
+    }
   }
 
   try {

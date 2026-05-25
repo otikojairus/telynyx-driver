@@ -57,6 +57,8 @@ BITRIX_CLIENT_SECRET=your_local_app_client_secret
 BITRIX_CONNECTOR_ID=telnyx_sms
 BITRIX_CONNECTOR_NAME=Telnyx SMS
 BITRIX_LINE_ID=2
+BITRIX_OUTBOUND_SECRET=
+THIRD_PARTY_WEBHOOK_SECRET=
 INBOUND_DEAL_WEBHOOK_SECRET=
 BITRIX_DEAL_FORWARD_WEBHOOK_URL=
 BITRIX_LEAD_SERVICE_FIELD=UF_CRM_SERVICE_TYPE
@@ -138,63 +140,97 @@ TELNYX_CALL_FORWARD_WEBHOOK_URL=https://your-app.example.com/webhooks/telnyx-cal
 
 The middleware stores webhook records in the `telnyx_webhooks` Postgres table.
 
-## Useful Endpoints
-
-- `GET /health`
-- `POST /sms/send`
-- `POST /debug/bitrix/test-message`
-- `GET /debug/bitrix/latest-history`
-- `GET /debug/bitrix/deals/stages`
-- `GET /debug/telnyx/webhooks`
-- `POST /bitrix/connector/register`
-- `POST /bitrix/leads/register`
-- `GET /bitrix/connector/status`
-- `POST /webhooks/telnyx`
-- `POST /webhooks/bitrix`
-- `POST /webhooks/bitrix/leads`
-- `POST /webhooks/inbound/bitrix/deals/status`
-
-## External-Facing APIs (For Other Systems)
+## API Reference
 
 Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 
-### Send SMS API
+### `GET /health`
 
-- `POST /sms/send`
-- Purpose: Send outbound SMS through Telnyx.
-- Body:
+- Purpose: Health check.
+- Auth: None.
+- Request body: None.
+- Response:
+
+```json
+{ "ok": true }
+```
+
+### `POST /sms/send`
+
+- Purpose: Send outbound SMS via Telnyx.
+- Auth: None.
+- Request body:
 
 ```json
 {
   "to": "+2547XXXXXXXX",
-  "text": "Hello"
+  "text": "Hello from middleware"
 }
 ```
 
-### Data Ingestion APIs (Inbound)
+- Response: `{ ok, telnyx }` on success.
 
-- `POST /webhooks/telnyx`
-- Purpose: Receive inbound Telnyx webhooks (SMS and call events).
-- Security: If `TELNYX_SIGNATURE_SECRET` is set, requests must include `telnyx-signature-ed25519` and `telnyx-timestamp`.
+### `POST /webhooks/telnyx`
 
-- `POST /webhooks/bitrix`
-- Purpose: Receive Bitrix Open Channel reply events and forward them as SMS via Telnyx.
-- Security: If `BITRIX_OUTBOUND_SECRET` is set, include header `x-bitrix-secret`.
+- Purpose: Receive inbound Telnyx webhooks (SMS/call events).
+- Auth:
+  - If `TELNYX_SIGNATURE_SECRET` is set, requires headers:
+    - `telnyx-signature-ed25519`
+    - `telnyx-timestamp`
+- Request body: Native Telnyx webhook payload.
+- Response: `{ ok: true }`, or `{ ignored: true }`, `{ duplicate: true }`, etc.
 
-- `POST /webhooks/bitrix/deals`
-- Purpose: Receive Bitrix deal events (`ONCRMDEALADD`, `ONCRMDEALUPDATE`).
-- Security: If `BITRIX_OUTBOUND_SECRET` is set, include header `x-bitrix-secret`.
-- Persistence: Events are stored in Postgres table `bitrix_deals`.
-- Notifications: Sends SMS and email status updates to the linked deal contact (when `CONTACT_ID` and contact phone/email exist).
+### `POST /webhooks/bitrix`
 
-- `POST /webhooks/bitrix/leads`
-- Purpose: Receive Bitrix lead-add events (`ONCRMLEADADD`), then send confirmation SMS and email to the lead contact.
-- Security: If `BITRIX_OUTBOUND_SECRET` is set, include header `x-bitrix-secret`.
+- Purpose: Receive Bitrix Open Channel reply webhook and send SMS via Telnyx.
+- Auth:
+  - If `BITRIX_OUTBOUND_SECRET` is set, requires header `x-bitrix-secret`.
+- Request body: Bitrix `OnImConnectorMessageAdd` webhook payload.
+- Response: `{ ok: true }`, or `{ duplicate: true }`, `{ ignored: true }`.
 
-- `POST /webhooks/inbound/bitrix/deals/status`
-- Purpose: Receive inbound status updates from external systems and move a Bitrix deal to a new stage (`crm.deal.update`).
-- Security: If `INBOUND_DEAL_WEBHOOK_SECRET` is set, include header `x-inbound-secret`.
-- Body:
+### `POST /webhooks/bitrix/deals`
+
+- Purpose: Receive Bitrix deal events, store to DB, optionally forward externally, and send deal status notifications.
+- Auth:
+  - If `BITRIX_OUTBOUND_SECRET` is set, requires header `x-bitrix-secret`.
+- Request body: Bitrix `OnCrmDealAdd` / `OnCrmDealUpdate` webhook payload.
+- Response (shape):
+
+```json
+{
+  "ok": true,
+  "tracked": true,
+  "dealId": "12345",
+  "stageId": "C1:NEW",
+  "classification": "stage_changed",
+  "details": {
+    "jobId": "12345",
+    "clientName": "Jane Doe",
+    "phoneNumber": "+2547XXXXXXXX",
+    "addressPostalCode": "Westlands / 00100",
+    "serviceType": "Plumbing",
+    "urgencyLevel": "High"
+  },
+  "forwarded": false,
+  "sms": { "attempted": true, "sent": true },
+  "email": { "attempted": true, "sent": false, "error": "..." }
+}
+```
+
+### `POST /webhooks/bitrix/leads`
+
+- Purpose: Receive lead-add events and send confirmation SMS + email.
+- Auth:
+  - If `BITRIX_OUTBOUND_SECRET` is set, requires header `x-bitrix-secret`.
+- Request body: Bitrix `OnCrmLeadAdd` webhook payload.
+- Response: `{ ok, leadId, customerName, serviceType, sms, email }`.
+
+### `POST /webhooks/inbound/bitrix/deals/status`
+
+- Purpose: Inbound API for external systems to move Bitrix deal stage (`crm.deal.update`).
+- Auth:
+  - If `INBOUND_DEAL_WEBHOOK_SECRET` is set, requires header `x-inbound-secret`.
+- Request body:
 
 ```json
 {
@@ -206,23 +242,120 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 }
 ```
 
-### Data Output APIs (Read/Export)
+- Response: `{ ok, moved, dealId, stageId, result }`.
 
-- `GET /debug/telnyx/webhooks`
-- Purpose: Return stored Telnyx webhook records from Postgres.
-- Query: `limit` (optional), example: `/debug/telnyx/webhooks?limit=100`
+### `POST /webhooks/inbound/bitrix/channel/message`
 
-- `GET /debug/bitrix/deal-events`
-- Purpose: Return recent in-memory Bitrix deal webhook events.
+- Purpose: Allow a third-party app to write a message into Bitrix Open Channel and register a callback URL for replies.
+- Auth:
+  - If `THIRD_PARTY_WEBHOOK_SECRET` is set, requires header `x-thirdparty-secret`.
+- Request body:
 
-- `GET /debug/bitrix/reply-webhooks`
-- Purpose: Return recent in-memory Bitrix reply webhook events.
+```json
+{
+  "customerPhone": "+254700000000",
+  "text": "Hello, please confirm appointment",
+  "replyWebhookUrl": "https://thirdparty.example.com/bitrix-replies",
+  "deliverSmsReplies": false,
+  "destinationPhone": "+18447500107",
+  "externalMessageId": "ext-123"
+}
+```
 
-- `GET /debug/bitrix/latest-history`
-- Purpose: Return latest Bitrix Open Line history for the last observed session.
+- Notes:
+  - `customerPhone`, `text`, and `replyWebhookUrl` are required.
+  - If `deliverSmsReplies` is `false`, Bitrix replies are sent to `replyWebhookUrl` only.
+  - If `deliverSmsReplies` is `true`, replies are sent to both callback URL and SMS (Telnyx flow).
+- Response: `{ ok, customerPhone, replyWebhookUrl, deliverSmsReplies, bitrix, answer }`.
 
-- `GET /debug/bitrix/deals/stages`
-- Purpose: Return all Bitrix deal pipelines and their stage IDs/names (including default pipeline).
+### `POST /bitrix/connector/register`
+
+- Purpose: Re-register connector and rebind Bitrix connector/deal/lead webhook events.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, register, activate, eventBind, dealEventBind, leadEventBind, status }`.
+
+### `POST /bitrix/leads/register`
+
+- Purpose: Rebind `OnCrmLeadAdd` webhook only.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, leadEventBind }`.
+
+### `GET /bitrix/connector/status`
+
+- Purpose: Read Bitrix connector status.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, status }`.
+
+### `GET /debug/telnyx/webhooks`
+
+- Purpose: Read stored Telnyx webhook history from Postgres.
+- Auth: None.
+- Query params:
+  - `limit` (optional, default `50`)
+- Response: `{ ok, records }`.
+
+### `GET /debug/bitrix/deal-events`
+
+- Purpose: Read recent in-memory deal webhook events.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, events }`.
+
+### `GET /debug/bitrix/reply-webhooks`
+
+- Purpose: Read recent in-memory Bitrix reply webhook traces.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, events }`.
+
+### `GET /debug/bitrix/latest-history`
+
+- Purpose: Read latest Bitrix Open Line session history seen by middleware.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, session, history }` (or `404` if no session yet).
+
+### `GET /debug/bitrix/deals/stages`
+
+- Purpose: Return all deal pipelines and their stage IDs.
+- Auth: None.
+- Request body: None.
+- Response (shape):
+
+```json
+{
+  "ok": true,
+  "pipelines": [
+    {
+      "categoryId": 0,
+      "categoryName": "Default",
+      "entityId": "DEAL_STAGE",
+      "stages": [
+        { "id": "NEW", "name": "New", "sort": 10, "semanticId": "P" }
+      ]
+    }
+  ]
+}
+```
+
+### `POST /debug/bitrix/test-message`
+
+- Purpose: Inject a test inbound SMS into Bitrix Open Channel flow.
+- Auth: None.
+- Request body (all optional):
+
+```json
+{
+  "from": "+254700000000",
+  "to": "+18447500107",
+  "text": "Testing Bitrix Open Channel"
+}
+```
+
+- Response: `{ ok, bitrix, answer }`.
 
 ### Push Output To Another System (Optional)
 
