@@ -10,6 +10,12 @@ export interface BitrixDealRecord {
   dealId: string;
   stageId: string;
   classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid";
+  jobId?: string;
+  clientName?: string;
+  phoneNumber?: string;
+  addressPostalCode?: string;
+  serviceType?: string;
+  urgencyLevel?: string;
   rawBody: BitrixDealEvent;
   outboundForward?: {
     enabled: boolean;
@@ -31,15 +37,27 @@ export async function saveBitrixDealRecord(record: BitrixDealRecord): Promise<vo
         deal_id,
         stage_id,
         classification,
+        job_id,
+        client_name,
+        phone_number,
+        address_postal_code,
+        service_type,
+        urgency_level,
         raw_body,
         outbound_forward
-      ) VALUES ($1, $2::timestamptz, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+      ) VALUES ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)
       ON CONFLICT (id) DO UPDATE SET
         received_at = EXCLUDED.received_at,
         event_name = EXCLUDED.event_name,
         deal_id = EXCLUDED.deal_id,
         stage_id = EXCLUDED.stage_id,
         classification = EXCLUDED.classification,
+        job_id = EXCLUDED.job_id,
+        client_name = EXCLUDED.client_name,
+        phone_number = EXCLUDED.phone_number,
+        address_postal_code = EXCLUDED.address_postal_code,
+        service_type = EXCLUDED.service_type,
+        urgency_level = EXCLUDED.urgency_level,
         raw_body = EXCLUDED.raw_body,
         outbound_forward = EXCLUDED.outbound_forward
     `,
@@ -50,6 +68,12 @@ export async function saveBitrixDealRecord(record: BitrixDealRecord): Promise<vo
       record.dealId,
       record.stageId,
       record.classification,
+      record.jobId ?? null,
+      record.clientName ?? null,
+      record.phoneNumber ?? null,
+      record.addressPostalCode ?? null,
+      record.serviceType ?? null,
+      record.urgencyLevel ?? null,
       JSON.stringify(record.rawBody),
       JSON.stringify(record.outboundForward ?? null)
     ]

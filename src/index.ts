@@ -430,6 +430,16 @@ function buildDealStatusMessage(name: string, serviceType: string, classificatio
   return `Hi ${name}, this is PRG. Update on your service request for ${serviceType}: ${statusText}.`;
 }
 
+function readFirstNonEmptyString(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
 app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
@@ -913,6 +923,14 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
   try {
     const classification = classifyDealEvent(eventName, stageId);
     const receivedAt = new Date().toISOString();
+    const dealDetails = {
+      jobId: dealId,
+      clientName: "",
+      phoneNumber: "",
+      addressPostalCode: "",
+      serviceType: "",
+      urgencyLevel: ""
+    };
     const eventRecord = {
       receivedAt,
       event: eventName,
@@ -930,6 +948,12 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       dealId,
       stageId,
       classification,
+      jobId: dealDetails.jobId,
+      clientName: dealDetails.clientName,
+      phoneNumber: dealDetails.phoneNumber,
+      addressPostalCode: dealDetails.addressPostalCode,
+      serviceType: dealDetails.serviceType,
+      urgencyLevel: dealDetails.urgencyLevel,
       rawBody: payload
     };
 
@@ -957,6 +981,27 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       const contactIdRaw = deal.CONTACT_ID ?? fields.CONTACT_ID ?? "";
       const contactId = String(contactIdRaw || "");
       const serviceType = buildLeadServiceType(deal);
+      const urgencyLevel = readFirstNonEmptyString(deal, [
+        "UF_CRM_URGENCY_LEVEL",
+        "UF_CRM_URGENCY",
+        "UF_URGENCY_LEVEL",
+        "UF_URGENCY"
+      ]);
+      const address = readFirstNonEmptyString(deal, [
+        "UF_CRM_ADDRESS",
+        "ADDRESS",
+        "ADDRESS_1",
+        "LOCATION"
+      ]);
+      const postalCode = readFirstNonEmptyString(deal, [
+        "UF_CRM_POSTAL_CODE",
+        "ADDRESS_POSTAL_CODE",
+        "POSTAL_CODE"
+      ]);
+
+      dealDetails.serviceType = serviceType;
+      dealDetails.urgencyLevel = urgencyLevel;
+      dealDetails.addressPostalCode = [address, postalCode].filter(Boolean).join(" / ");
 
       if (contactId) {
         const contactResponse = await getBitrixContactById(contactId);
@@ -965,6 +1010,14 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         const customerPhone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
         const customerEmail = readLeadContactValue(contact.EMAIL);
         const message = buildDealStatusMessage(customerName, serviceType, classification);
+
+        dealDetails.clientName = customerName;
+        dealDetails.phoneNumber = customerPhone;
+        if (!dealDetails.addressPostalCode) {
+          const contactAddress = readFirstNonEmptyString(contact, ["ADDRESS", "ADDRESS_1"]);
+          const contactPostalCode = readFirstNonEmptyString(contact, ["ADDRESS_POSTAL_CODE", "POSTAL_CODE"]);
+          dealDetails.addressPostalCode = [contactAddress, contactPostalCode].filter(Boolean).join(" / ");
+        }
 
         smsResult.attempted = Boolean(customerPhone);
         emailResult.attempted = Boolean(customerEmail);
@@ -1000,6 +1053,12 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         smsResult.error = "Deal has no CONTACT_ID";
         emailResult.error = "Deal has no CONTACT_ID";
       }
+
+      await saveBitrixDealRecord({
+        ...persistentRecord,
+        ...dealDetails,
+        outboundForward
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Notification lookup failed";
       smsResult.error = reason;
@@ -1026,6 +1085,7 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       dealId,
       stageId,
       classification,
+      details: dealDetails,
       forwarded: Boolean(outboundForward?.enabled && outboundForward.delivered),
       sms: smsResult,
       email: emailResult

@@ -46,9 +46,34 @@ export async function initializeDatabase(): Promise<void> {
       deal_id TEXT NOT NULL,
       stage_id TEXT NOT NULL,
       classification TEXT NOT NULL,
+      job_id TEXT,
+      client_name TEXT,
+      phone_number TEXT,
+      address_postal_code TEXT,
+      service_type TEXT,
+      urgency_level TEXT,
       raw_body JSONB NOT NULL,
       outbound_forward JSONB
     )
+  `);
+
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS job_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS client_name TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS phone_number TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS address_postal_code TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS service_type TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS urgency_level TEXT
   `);
 
   await pool.query(`
