@@ -257,6 +257,18 @@ export async function getBitrixLeadById(leadId: string) {
   });
 }
 
+export async function getBitrixDealById(dealId: string) {
+  return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.deal.get", {
+    id: dealId
+  });
+}
+
+export async function getBitrixContactById(contactId: string) {
+  return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.contact.get", {
+    id: contactId
+  });
+}
+
 export async function sendBitrixDeliveryStatus(params: {
   imChatId: number;
   imMessageId: number;

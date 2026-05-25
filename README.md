@@ -182,6 +182,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - Purpose: Receive Bitrix deal events (`ONCRMDEALADD`, `ONCRMDEALUPDATE`).
 - Security: If `BITRIX_OUTBOUND_SECRET` is set, include header `x-bitrix-secret`.
 - Persistence: Events are stored in Postgres table `bitrix_deals`.
+- Notifications: Sends SMS and email status updates to the linked deal contact (when `CONTACT_ID` and contact phone/email exist).
 
 - `POST /webhooks/bitrix/leads`
 - Purpose: Receive Bitrix lead-add events (`ONCRMLEADADD`), then send confirmation SMS and email to the lead contact.

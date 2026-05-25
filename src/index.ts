@@ -8,6 +8,8 @@ import {
   bindBitrixDealEvents,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
+  getBitrixContactById,
+  getBitrixDealById,
   getBitrixLeadById,
   getBitrixOpenLineHistory,
   getBitrixConnectorStatus,
@@ -405,6 +407,27 @@ function buildLeadServiceType(lead: Record<string, unknown>): string {
 
 function buildLeadConfirmationMessage(name: string, serviceType: string): string {
   return `Hi ${name}, this is PRG confirming your service request for ${serviceType}. A technician will be in touch shortly.`;
+}
+
+function buildDealStatusLabel(classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid"): string {
+  if (classification === "deal_created") {
+    return "we have received your service request";
+  }
+  if (classification === "quote_approved") {
+    return "your quote has been approved";
+  }
+  if (classification === "quote_declined") {
+    return "your quote was declined";
+  }
+  if (classification === "closed_won_paid") {
+    return "your request is confirmed and paid";
+  }
+  return "your request status has been updated";
+}
+
+function buildDealStatusMessage(name: string, serviceType: string, classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid"): string {
+  const statusText = buildDealStatusLabel(classification);
+  return `Hi ${name}, this is PRG. Update on your service request for ${serviceType}: ${statusText}.`;
 }
 
 app.get("/health", (_req, res) => {
@@ -919,6 +942,70 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       });
     }
 
+    const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
+      attempted: false,
+      sent: false
+    };
+    const emailResult: { attempted: boolean; sent: boolean; error?: string } = {
+      attempted: false,
+      sent: false
+    };
+
+    try {
+      const dealResponse = await getBitrixDealById(dealId);
+      const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+      const contactIdRaw = deal.CONTACT_ID ?? fields.CONTACT_ID ?? "";
+      const contactId = String(contactIdRaw || "");
+      const serviceType = buildLeadServiceType(deal);
+
+      if (contactId) {
+        const contactResponse = await getBitrixContactById(contactId);
+        const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+        const customerName = buildLeadCustomerName(contact);
+        const customerPhone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
+        const customerEmail = readLeadContactValue(contact.EMAIL);
+        const message = buildDealStatusMessage(customerName, serviceType, classification);
+
+        smsResult.attempted = Boolean(customerPhone);
+        emailResult.attempted = Boolean(customerEmail);
+
+        if (customerPhone) {
+          try {
+            await sendSmsThroughTelnyx({ to: customerPhone, text: message });
+            smsResult.sent = true;
+          } catch (error) {
+            smsResult.error = error instanceof Error ? error.message : "SMS send failed";
+          }
+        }
+
+        if (customerEmail) {
+          if (canSendEmail()) {
+            try {
+              await sendLeadConfirmationEmail({
+                to: customerEmail,
+                customerName,
+                serviceType,
+                message,
+                subject: "PRG Service Request Status Update"
+              });
+              emailResult.sent = true;
+            } catch (error) {
+              emailResult.error = error instanceof Error ? error.message : "Email send failed";
+            }
+          } else {
+            emailResult.error = "Email API is not configured";
+          }
+        }
+      } else {
+        smsResult.error = "Deal has no CONTACT_ID";
+        emailResult.error = "Deal has no CONTACT_ID";
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Notification lookup failed";
+      smsResult.error = reason;
+      emailResult.error = reason;
+    }
+
     console.log(
       "Bitrix deal webhook received",
       JSON.stringify(
@@ -939,7 +1026,9 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       dealId,
       stageId,
       classification,
-      forwarded: Boolean(outboundForward?.enabled && outboundForward.delivered)
+      forwarded: Boolean(outboundForward?.enabled && outboundForward.delivered),
+      sms: smsResult,
+      email: emailResult
     });
   } catch (error) {
     console.error("Failed to persist/forward Bitrix deal webhook", error);
