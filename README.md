@@ -268,6 +268,27 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
   - If `deliverSmsReplies` is `true`, replies are sent to both callback URL and SMS (Telnyx flow).
 - Response: `{ ok, customerPhone, replyWebhookUrl, deliverSmsReplies, bitrix, answer }`.
 
+### `POST /webhooks/inbound/bitrix/employee/message`
+
+- Purpose: Send a third-party message directly to a Bitrix employee inbox by employee email (no SMS/Telnyx send).
+- Auth:
+  - If `THIRD_PARTY_WEBHOOK_SECRET` is set, requires header `x-thirdparty-secret`.
+- Request body:
+
+```json
+{
+  "employeeEmail": "agent@company.com",
+  "text": "New message from external app",
+  "customerPhone": "+254700000000",
+  "replyWebhookUrl": "https://thirdparty.example.com/bitrix-replies"
+}
+```
+
+- Notes:
+  - `employeeEmail` and `text` are required.
+  - `customerPhone` + `replyWebhookUrl` are optional and used only to map future Bitrix replies to your callback route.
+- Response: `{ ok, employeeEmail, employeeId, bitrix }`.
+
 ### `POST /bitrix/connector/register`
 
 - Purpose: Re-register connector and rebind Bitrix connector/deal/lead webhook events.

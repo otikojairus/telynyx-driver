@@ -293,6 +293,24 @@ export async function listBitrixStatuses(filter: Record<string, unknown>) {
   });
 }
 
+export async function findBitrixUserByEmail(email: string) {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("user.get", {
+    FILTER: {
+      EMAIL: email
+    }
+  });
+}
+
+export async function sendBitrixInternalMessage(params: {
+  userId: string;
+  text: string;
+}) {
+  return callBitrixMethod("im.message.add", {
+    DIALOG_ID: String(params.userId),
+    MESSAGE: params.text
+  });
+}
+
 export async function sendBitrixDeliveryStatus(params: {
   imChatId: number;
   imMessageId: number;

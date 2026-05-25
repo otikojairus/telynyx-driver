@@ -9,6 +9,7 @@ import {
   bindBitrixDealEvents,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
+  findBitrixUserByEmail,
   getBitrixContactById,
   listBitrixDealCategories,
   listBitrixStatuses,
@@ -18,6 +19,7 @@ import {
   getBitrixConnectorStatus,
   normalizeSmsParticipantId,
   registerBitrixConnector,
+  sendBitrixInternalMessage,
   sendBitrixDeliveryStatus,
   sendSmsThroughTelnyx,
   sendToBitrixOpenChannel,
@@ -774,6 +776,61 @@ app.post("/webhooks/inbound/bitrix/channel/message", async (req: Request, res: R
   } catch (error) {
     console.error("Failed to send third-party message into Bitrix channel", error);
     return res.status(500).json({ ok: false, error: "Third-party channel send failed" });
+  }
+});
+
+app.post("/webhooks/inbound/bitrix/employee/message", async (req: Request, res: Response) => {
+  if (!verifyThirdPartyWebhookSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid third-party webhook secret" });
+  }
+
+  const body = req.body as {
+    employeeEmail?: string;
+    text?: string;
+    customerPhone?: string;
+    replyWebhookUrl?: string;
+  };
+
+  const employeeEmail = String(body.employeeEmail ?? "").trim().toLowerCase();
+  const text = String(body.text ?? "").trim();
+
+  if (!employeeEmail || !text) {
+    return res.status(400).json({ ok: false, error: "Missing employeeEmail or text" });
+  }
+
+  try {
+    const usersResponse = await findBitrixUserByEmail(employeeEmail);
+    const users = (usersResponse.result ?? []) as Array<Record<string, unknown>>;
+    const firstUser = users[0] ?? null;
+    const userId = String(firstUser?.ID ?? "");
+    if (!userId) {
+      return res.status(404).json({ ok: false, error: "Employee not found by email" });
+    }
+
+    const customerPhone = normalizePhoneForSms(String(body.customerPhone ?? ""));
+    const replyWebhookUrl = String(body.replyWebhookUrl ?? "").trim();
+    if (customerPhone && replyWebhookUrl) {
+      thirdPartyReplyRouteByPhone.set(customerPhone, {
+        webhookUrl: replyWebhookUrl,
+        deliverSmsReplies: false
+      });
+      trimMap(thirdPartyReplyRouteByPhone);
+    }
+
+    const bitrix = await sendBitrixInternalMessage({
+      userId,
+      text
+    });
+
+    return res.status(200).json({
+      ok: true,
+      employeeEmail,
+      employeeId: userId,
+      bitrix
+    });
+  } catch (error) {
+    console.error("Failed to send third-party message to Bitrix employee inbox", error);
+    return res.status(500).json({ ok: false, error: "Employee inbox send failed" });
   }
 });
 
