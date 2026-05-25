@@ -20,6 +20,7 @@ export const config = {
   bitrixConnectorName: process.env.BITRIX_CONNECTOR_NAME ?? "Telnyx SMS",
   bitrixLineId: requireEnv("BITRIX_LINE_ID"),
   bitrixOutboundSecret: process.env.BITRIX_OUTBOUND_SECRET ?? "",
+  inboundDealWebhookSecret: process.env.INBOUND_DEAL_WEBHOOK_SECRET ?? "",
   bitrixLeadServiceField: process.env.BITRIX_LEAD_SERVICE_FIELD ?? "UF_CRM_SERVICE_TYPE",
   bitrixDealForwardWebhookUrl: process.env.BITRIX_DEAL_FORWARD_WEBHOOK_URL ?? "",
   dataDir: process.env.DATA_DIR ?? "data",

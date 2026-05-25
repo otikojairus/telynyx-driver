@@ -57,6 +57,7 @@ BITRIX_CLIENT_SECRET=your_local_app_client_secret
 BITRIX_CONNECTOR_ID=telnyx_sms
 BITRIX_CONNECTOR_NAME=Telnyx SMS
 BITRIX_LINE_ID=2
+INBOUND_DEAL_WEBHOOK_SECRET=
 BITRIX_DEAL_FORWARD_WEBHOOK_URL=
 BITRIX_LEAD_SERVICE_FIELD=UF_CRM_SERVICE_TYPE
 
@@ -143,6 +144,7 @@ The middleware stores webhook records in the `telnyx_webhooks` Postgres table.
 - `POST /sms/send`
 - `POST /debug/bitrix/test-message`
 - `GET /debug/bitrix/latest-history`
+- `GET /debug/bitrix/deals/stages`
 - `GET /debug/telnyx/webhooks`
 - `POST /bitrix/connector/register`
 - `POST /bitrix/leads/register`
@@ -150,6 +152,7 @@ The middleware stores webhook records in the `telnyx_webhooks` Postgres table.
 - `POST /webhooks/telnyx`
 - `POST /webhooks/bitrix`
 - `POST /webhooks/bitrix/leads`
+- `POST /webhooks/inbound/bitrix/deals/status`
 
 ## External-Facing APIs (For Other Systems)
 
@@ -188,6 +191,21 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - Purpose: Receive Bitrix lead-add events (`ONCRMLEADADD`), then send confirmation SMS and email to the lead contact.
 - Security: If `BITRIX_OUTBOUND_SECRET` is set, include header `x-bitrix-secret`.
 
+- `POST /webhooks/inbound/bitrix/deals/status`
+- Purpose: Receive inbound status updates from external systems and move a Bitrix deal to a new stage (`crm.deal.update`).
+- Security: If `INBOUND_DEAL_WEBHOOK_SECRET` is set, include header `x-inbound-secret`.
+- Body:
+
+```json
+{
+  "dealId": "12345",
+  "stageId": "C1:NEW",
+  "fields": {
+    "COMMENTS": "Moved by external system"
+  }
+}
+```
+
 ### Data Output APIs (Read/Export)
 
 - `GET /debug/telnyx/webhooks`
@@ -202,6 +220,9 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 
 - `GET /debug/bitrix/latest-history`
 - Purpose: Return latest Bitrix Open Line history for the last observed session.
+
+- `GET /debug/bitrix/deals/stages`
+- Purpose: Return all Bitrix deal pipelines and their stage IDs/names (including default pipeline).
 
 ### Push Output To Another System (Optional)
 
@@ -250,6 +271,12 @@ Read latest Bitrix Open Line history:
 
 ```bash
 curl http://localhost:3000/debug/bitrix/latest-history
+```
+
+Read all deal pipeline stage IDs:
+
+```bash
+curl http://localhost:3000/debug/bitrix/deals/stages
 ```
 
 Read stored Telnyx webhooks:

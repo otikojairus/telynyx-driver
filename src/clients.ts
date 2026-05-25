@@ -269,6 +269,30 @@ export async function getBitrixContactById(contactId: string) {
   });
 }
 
+export async function updateBitrixDealStage(params: {
+  dealId: string;
+  stageId: string;
+  extraFields?: Record<string, unknown>;
+}) {
+  return callBitrixMethod("crm.deal.update", {
+    id: params.dealId,
+    fields: {
+      STAGE_ID: params.stageId,
+      ...(params.extraFields ?? {})
+    }
+  });
+}
+
+export async function listBitrixDealCategories() {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("crm.dealcategory.list", {});
+}
+
+export async function listBitrixStatuses(filter: Record<string, unknown>) {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("crm.status.list", {
+    filter
+  });
+}
+
 export async function sendBitrixDeliveryStatus(params: {
   imChatId: number;
   imMessageId: number;

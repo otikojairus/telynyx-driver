@@ -9,6 +9,8 @@ import {
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   getBitrixContactById,
+  listBitrixDealCategories,
+  listBitrixStatuses,
   getBitrixDealById,
   getBitrixLeadById,
   getBitrixOpenLineHistory,
@@ -17,7 +19,8 @@ import {
   registerBitrixConnector,
   sendBitrixDeliveryStatus,
   sendSmsThroughTelnyx,
-  sendToBitrixOpenChannel
+  sendToBitrixOpenChannel,
+  updateBitrixDealStage
 } from "./clients";
 import { initializeDatabase } from "./database";
 import {
@@ -87,6 +90,14 @@ function verifyBitrixSecret(req: Request): boolean {
   }
   const incoming = String(req.headers["x-bitrix-secret"] ?? "");
   return incoming === config.bitrixOutboundSecret;
+}
+
+function verifyInboundDealSecret(req: Request): boolean {
+  if (!config.inboundDealWebhookSecret) {
+    return true;
+  }
+  const incoming = String(req.headers["x-inbound-secret"] ?? "");
+  return incoming === config.inboundDealWebhookSecret;
 }
 
 function verifyTelnyxSignature(req: Request): boolean {
@@ -601,6 +612,55 @@ app.get("/debug/bitrix/deal-events", (_req: Request, res: Response) => {
 
 app.get("/debug/bitrix/reply-webhooks", (_req: Request, res: Response) => {
   return res.status(200).json({ ok: true, events: recentBitrixReplyWebhooks });
+});
+
+app.get("/debug/bitrix/deals/stages", async (_req: Request, res: Response) => {
+  try {
+    const categoriesResponse = await listBitrixDealCategories();
+    const categories = (categoriesResponse.result ?? []) as Array<Record<string, unknown>>;
+
+    const defaultStatusesResponse = await listBitrixStatuses({ ENTITY_ID: "DEAL_STAGE" });
+    const defaultStages = ((defaultStatusesResponse.result ?? []) as Array<Record<string, unknown>>).map((stage) => ({
+      id: String(stage.STATUS_ID ?? ""),
+      name: String(stage.NAME ?? ""),
+      sort: Number(stage.SORT ?? 0),
+      semanticId: String((((stage.EXTRA as Record<string, unknown> | undefined) ?? {}).SEMANTICS ?? stage.SEMANTICS ?? ""))
+    }));
+
+    const pipelines = [
+      {
+        categoryId: 0,
+        categoryName: "Default",
+        entityId: "DEAL_STAGE",
+        stages: defaultStages
+      }
+    ];
+
+    for (const category of categories) {
+      const categoryId = Number(category.ID ?? 0);
+      const categoryName = String(category.NAME ?? `Pipeline ${categoryId}`);
+      const entityId = `DEAL_STAGE_${categoryId}`;
+      const statusesResponse = await listBitrixStatuses({ ENTITY_ID: entityId });
+      const stages = ((statusesResponse.result ?? []) as Array<Record<string, unknown>>).map((stage) => ({
+        id: String(stage.STATUS_ID ?? ""),
+        name: String(stage.NAME ?? ""),
+        sort: Number(stage.SORT ?? 0),
+        semanticId: String((((stage.EXTRA as Record<string, unknown> | undefined) ?? {}).SEMANTICS ?? stage.SEMANTICS ?? ""))
+      }));
+
+      pipelines.push({
+        categoryId,
+        categoryName,
+        entityId,
+        stages
+      });
+    }
+
+    return res.status(200).json({ ok: true, pipelines });
+  } catch (error) {
+    console.error("Failed to load Bitrix deal stages", error);
+    return res.status(500).json({ ok: false, error: "Bitrix deal stages lookup failed" });
+  }
 });
 
 app.post("/sms/send", async (req: Request, res: Response) => {
@@ -1170,6 +1230,44 @@ app.post("/webhooks/bitrix/leads", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to process Bitrix lead webhook", error);
     return res.status(500).json({ ok: false, error: "Bitrix lead handling failed" });
+  }
+});
+
+app.post("/webhooks/inbound/bitrix/deals/status", async (req: Request, res: Response) => {
+  if (!verifyInboundDealSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid inbound webhook secret" });
+  }
+
+  const body = req.body as {
+    dealId?: string | number;
+    stageId?: string;
+    fields?: Record<string, unknown>;
+  };
+
+  const dealId = String(body.dealId ?? "").trim();
+  const stageId = String(body.stageId ?? "").trim();
+
+  if (!dealId || !stageId) {
+    return res.status(400).json({ ok: false, error: "Missing dealId or stageId" });
+  }
+
+  try {
+    const result = await updateBitrixDealStage({
+      dealId,
+      stageId,
+      extraFields: body.fields
+    });
+
+    return res.status(200).json({
+      ok: true,
+      moved: true,
+      dealId,
+      stageId,
+      result
+    });
+  } catch (error) {
+    console.error("Failed to update Bitrix deal stage from inbound webhook", error);
+    return res.status(500).json({ ok: false, error: "Bitrix deal stage update failed" });
   }
 });
 
