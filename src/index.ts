@@ -361,6 +361,24 @@ function readLeadContactValue(value: unknown): string {
   return "";
 }
 
+function normalizePhoneForSms(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (trimmed.startsWith("+")) {
+    return `+${trimmed.slice(1).replace(/\D/g, "")}`;
+  }
+
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) {
+    return "";
+  }
+
+  return `+${digits}`;
+}
+
 function buildLeadCustomerName(lead: Record<string, unknown>): string {
   const firstName = String(lead.NAME ?? "").trim();
   const lastName = String(lead.LAST_NAME ?? "").trim();
@@ -954,7 +972,7 @@ app.post("/webhooks/bitrix/leads", async (req: Request, res: Response) => {
     const customerName = buildLeadCustomerName(lead);
     const serviceType = buildLeadServiceType(lead);
     const message = buildLeadConfirmationMessage(customerName, serviceType);
-    const customerPhone = readLeadContactValue(lead.PHONE);
+    const customerPhone = normalizePhoneForSms(readLeadContactValue(lead.PHONE));
     const customerEmail = readLeadContactValue(lead.EMAIL);
 
     const smsResult: { attempted: boolean; sent: boolean; error?: string } = {

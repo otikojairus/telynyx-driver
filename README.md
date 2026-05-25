@@ -66,12 +66,7 @@ TELNYX_FORWARD_WEBHOOK_URL=
 TELNYX_CALL_FORWARD_WEBHOOK_URL=
 TELNYX_WEBHOOK_STORE_LIMIT=1000
 
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USER=
-SMTP_PASS=
-SMTP_FROM=
+EMAIL_API_URL=https://pipeproof.com/wp-json/email-api/v1/send
 LEAD_NOTIFICATION_EMAIL_SUBJECT=PRG Service Request Confirmation
 ```
 
@@ -212,7 +207,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `TELNYX_FORWARD_WEBHOOK_URL`: Forwards stored inbound Telnyx SMS webhooks to your endpoint.
 - `TELNYX_CALL_FORWARD_WEBHOOK_URL`: Forwards stored Telnyx call webhooks to your endpoint.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
-- SMTP vars (`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`): enable lead confirmation emails.
+- `EMAIL_API_URL`: endpoint used to send lead confirmation emails (default: Pipeproof API).
 
 ## Debug Commands
 
