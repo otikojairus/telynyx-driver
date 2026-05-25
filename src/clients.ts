@@ -227,6 +227,36 @@ export async function bindBitrixConnectorEvents() {
   });
 }
 
+export async function bindBitrixDealEvents() {
+  const handler = `${config.publicBaseUrl}/webhooks/bitrix/deals`;
+  const events = ["OnCrmDealAdd", "OnCrmDealUpdate"];
+
+  for (const event of events) {
+    await callBitrixMethod("event.unbind", { event, handler });
+    await callBitrixMethod("event.bind", { event, handler });
+  }
+
+  return { ok: true, events, handler };
+}
+
+export async function bindBitrixLeadEvents() {
+  const handler = `${config.publicBaseUrl}/webhooks/bitrix/leads`;
+  const events = ["OnCrmLeadAdd"];
+
+  for (const event of events) {
+    await callBitrixMethod("event.unbind", { event, handler });
+    await callBitrixMethod("event.bind", { event, handler });
+  }
+
+  return { ok: true, events, handler };
+}
+
+export async function getBitrixLeadById(leadId: string) {
+  return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.lead.get", {
+    id: leadId
+  });
+}
+
 export async function sendBitrixDeliveryStatus(params: {
   imChatId: number;
   imMessageId: number;

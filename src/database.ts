@@ -37,6 +37,29 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_telnyx_webhooks_event_id
     ON telnyx_webhooks (event_id)
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bitrix_deals (
+      id TEXT PRIMARY KEY,
+      received_at TIMESTAMPTZ NOT NULL,
+      event_name TEXT NOT NULL,
+      deal_id TEXT NOT NULL,
+      stage_id TEXT NOT NULL,
+      classification TEXT NOT NULL,
+      raw_body JSONB NOT NULL,
+      outbound_forward JSONB
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_bitrix_deals_received_at
+    ON bitrix_deals (received_at DESC)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_bitrix_deals_deal_id
+    ON bitrix_deals (deal_id)
+  `);
 }
 
 export async function queryDatabase<T extends QueryResultRow = QueryResultRow>(

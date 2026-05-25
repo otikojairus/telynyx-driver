@@ -114,3 +114,37 @@ export interface BitrixOutboundEvent {
     }>;
   };
 }
+
+export interface BitrixDealEvent {
+  event?: string;
+  data?: {
+    ID?: string | number;
+    FIELDS?: {
+      ID?: string | number;
+      STAGE_ID?: string;
+      CATEGORY_ID?: string | number;
+      TITLE?: string;
+    } & Record<string, unknown>;
+  } & Record<string, unknown>;
+  auth?: {
+    domain?: string;
+    member_id?: string;
+  } & Record<string, unknown>;
+}
+
+export interface BitrixLeadEvent {
+  event?: string;
+  data?: {
+    ID?: string | number;
+    FIELDS?: {
+      ID?: string | number;
+      TITLE?: string;
+      NAME?: string;
+      LAST_NAME?: string;
+    } & Record<string, unknown>;
+  } & Record<string, unknown>;
+  auth?: {
+    domain?: string;
+    member_id?: string;
+  } & Record<string, unknown>;
+}

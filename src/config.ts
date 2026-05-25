@@ -20,11 +20,20 @@ export const config = {
   bitrixConnectorName: process.env.BITRIX_CONNECTOR_NAME ?? "Telnyx SMS",
   bitrixLineId: requireEnv("BITRIX_LINE_ID"),
   bitrixOutboundSecret: process.env.BITRIX_OUTBOUND_SECRET ?? "",
+  bitrixLeadServiceField: process.env.BITRIX_LEAD_SERVICE_FIELD ?? "UF_CRM_SERVICE_TYPE",
+  bitrixDealForwardWebhookUrl: process.env.BITRIX_DEAL_FORWARD_WEBHOOK_URL ?? "",
   dataDir: process.env.DATA_DIR ?? "data",
   telnyxApiKey: requireEnv("TELNYX_API_KEY"),
   telnyxFromNumber: requireEnv("TELNYX_FROM_NUMBER"),
   telnyxSignatureSecret: process.env.TELNYX_SIGNATURE_SECRET ?? "",
   telnyxForwardWebhookUrl: process.env.TELNYX_FORWARD_WEBHOOK_URL ?? "",
   telnyxCallForwardWebhookUrl: process.env.TELNYX_CALL_FORWARD_WEBHOOK_URL ?? "",
-  telnyxWebhookStoreLimit: Number(process.env.TELNYX_WEBHOOK_STORE_LIMIT ?? 1000)
+  telnyxWebhookStoreLimit: Number(process.env.TELNYX_WEBHOOK_STORE_LIMIT ?? 1000),
+  smtpHost: process.env.SMTP_HOST ?? "",
+  smtpPort: Number(process.env.SMTP_PORT ?? 587),
+  smtpSecure: String(process.env.SMTP_SECURE ?? "false").toLowerCase() === "true",
+  smtpUser: process.env.SMTP_USER ?? "",
+  smtpPass: process.env.SMTP_PASS ?? "",
+  smtpFrom: process.env.SMTP_FROM ?? "",
+  leadNotificationEmailSubject: process.env.LEAD_NOTIFICATION_EMAIL_SUBJECT ?? "PRG Service Request Confirmation"
 };

@@ -1,10 +1,14 @@
 import crypto from "crypto";
 import express, { Request, Response } from "express";
 import { config } from "./config";
+import { forwardBitrixDealRecord, saveBitrixDealRecord } from "./bitrixDealStore";
 import {
   activateBitrixConnector,
   answerBitrixOpenLineChat,
+  bindBitrixDealEvents,
+  bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
+  getBitrixLeadById,
   getBitrixOpenLineHistory,
   getBitrixConnectorStatus,
   normalizeSmsParticipantId,
@@ -20,8 +24,9 @@ import {
   saveTelnyxWebhookRecord,
   TelnyxWebhookRecord
 } from "./telnyxWebhookStore";
+import { canSendEmail, sendLeadConfirmationEmail } from "./notifications";
 import { writeBitrixTokens } from "./tokenStore";
-import { BitrixInstallRequest, BitrixOutboundEvent, TelnyxWebhook } from "./types";
+import { BitrixDealEvent, BitrixInstallRequest, BitrixLeadEvent, BitrixOutboundEvent, TelnyxWebhook } from "./types";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -39,6 +44,26 @@ const processedBitrixMessageIds = new Set<string>();
 const phoneByChatId = new Map<string, string>();
 const phoneByUserId = new Map<string, string>();
 let lastBitrixSession: { sessionId?: string | number; chatId?: string | number } = {};
+const recentBitrixReplyWebhooks: Array<{
+  receivedAt: string;
+  status: "received" | "ignored" | "missing_fields" | "duplicate" | "sent" | "failed";
+  event?: string;
+  messageId?: string;
+  chatId?: string;
+  bitrixUserId?: string;
+  phone?: string;
+  text?: string;
+  body: unknown;
+  error?: string;
+}> = [];
+const recentBitrixDealEvents: Array<{
+  receivedAt: string;
+  event: string;
+  dealId: string;
+  stageId: string;
+  classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid";
+  body: BitrixDealEvent;
+}> = [];
 
 function isDuplicate(set: Set<string>, key: string): boolean {
   if (set.has(key)) {
@@ -255,6 +280,115 @@ function readNestedAuthValue(body: Record<string, unknown>, key: string): string
   return readBodyValue(body, `auth[${key}]`);
 }
 
+function rememberBitrixDealEvent(event: {
+  receivedAt: string;
+  event: string;
+  dealId: string;
+  stageId: string;
+  classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid";
+  body: BitrixDealEvent;
+}): void {
+  recentBitrixDealEvents.unshift(event);
+  if (recentBitrixDealEvents.length > 200) {
+    recentBitrixDealEvents.length = 200;
+  }
+}
+
+function rememberBitrixReplyWebhook(record: {
+  status: "received" | "ignored" | "missing_fields" | "duplicate" | "sent" | "failed";
+  event?: string;
+  messageId?: string;
+  chatId?: string;
+  bitrixUserId?: string;
+  phone?: string;
+  text?: string;
+  body: unknown;
+  error?: string;
+}): void {
+  recentBitrixReplyWebhooks.unshift({
+    receivedAt: new Date().toISOString(),
+    ...record
+  });
+
+  if (recentBitrixReplyWebhooks.length > 50) {
+    recentBitrixReplyWebhooks.length = 50;
+  }
+}
+
+function classifyDealEvent(eventName: string, stageId: string): "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid" {
+  const normalizedStage = stageId.toUpperCase();
+  if (eventName === "ONCRMDEALADD") {
+    return "deal_created";
+  }
+
+  if (
+    normalizedStage === "CLOSED_WON_PAID" ||
+    (normalizedStage.includes("WON") && normalizedStage.includes("PAID"))
+  ) {
+    return "closed_won_paid";
+  }
+
+  if (
+    normalizedStage.includes("DECLIN") ||
+    normalizedStage.includes("REJECT") ||
+    normalizedStage.includes("LOSE")
+  ) {
+    return "quote_declined";
+  }
+
+  if (
+    normalizedStage.includes("APPROV") ||
+    normalizedStage.includes("ACCEPT") ||
+    normalizedStage.includes("QUOTE_APPROVED")
+  ) {
+    return "quote_approved";
+  }
+
+  return "stage_changed";
+}
+
+function readLeadContactValue(value: unknown): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0] as Record<string, unknown>;
+    const nested = first?.VALUE;
+    return typeof nested === "string" ? nested.trim() : "";
+  }
+
+  return "";
+}
+
+function buildLeadCustomerName(lead: Record<string, unknown>): string {
+  const firstName = String(lead.NAME ?? "").trim();
+  const lastName = String(lead.LAST_NAME ?? "").trim();
+  const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+  if (fullName) {
+    return fullName;
+  }
+
+  const title = String(lead.TITLE ?? "").trim();
+  return title || "Customer";
+}
+
+function buildLeadServiceType(lead: Record<string, unknown>): string {
+  const dynamicFieldValue = lead[config.bitrixLeadServiceField];
+  const fromConfiguredField = typeof dynamicFieldValue === "string" ? dynamicFieldValue.trim() : "";
+  if (fromConfiguredField) {
+    return fromConfiguredField;
+  }
+
+  const title = String(lead.TITLE ?? "").trim();
+  const sourceDescription = String(lead.SOURCE_DESCRIPTION ?? "").trim();
+  return title || sourceDescription || "your service request";
+}
+
+function buildLeadConfirmationMessage(name: string, serviceType: string): string {
+  return `Hi ${name}, this is PRG confirming your service request for ${serviceType}. A technician will be in touch shortly.`;
+}
+
 app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
@@ -310,6 +444,8 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const register = await registerBitrixConnector();
     const activate = await activateBitrixConnector();
     const eventBind = await bindBitrixConnectorEvents();
+    const dealEventBind = await bindBitrixDealEvents();
+    const leadEventBind = await bindBitrixLeadEvents();
     const status = await getBitrixConnectorStatus();
 
     return res.status(200).send(`
@@ -317,7 +453,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, status }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, status }, null, 2)}</pre>
         </body>
       </html>
     `);
@@ -343,11 +479,33 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const register = await registerBitrixConnector();
     const activate = await activateBitrixConnector();
     const eventBind = await bindBitrixConnectorEvents();
+    const dealEventBind = await bindBitrixDealEvents();
+    const leadEventBind = await bindBitrixLeadEvents();
     const status = await getBitrixConnectorStatus();
-    return res.status(200).json({ ok: true, register, activate, eventBind, status });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, status });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
+  }
+});
+
+app.post("/bitrix/deals/register", async (_req: Request, res: Response) => {
+  try {
+    const dealEventBind = await bindBitrixDealEvents();
+    return res.status(200).json({ ok: true, dealEventBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix deal events", error);
+    return res.status(500).json({ ok: false, error: "Bitrix deal event binding failed" });
+  }
+});
+
+app.post("/bitrix/leads/register", async (_req: Request, res: Response) => {
+  try {
+    const leadEventBind = await bindBitrixLeadEvents();
+    return res.status(200).json({ ok: true, leadEventBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix lead events", error);
+    return res.status(500).json({ ok: false, error: "Bitrix lead event binding failed" });
   }
 });
 
@@ -384,6 +542,14 @@ app.get("/debug/telnyx/webhooks", async (req: Request, res: Response) => {
     console.error("Failed to read stored Telnyx webhooks", error);
     return res.status(500).json({ ok: false, error: "Telnyx webhook history failed" });
   }
+});
+
+app.get("/debug/bitrix/deal-events", (_req: Request, res: Response) => {
+  return res.status(200).json({ ok: true, events: recentBitrixDealEvents });
+});
+
+app.get("/debug/bitrix/reply-webhooks", (_req: Request, res: Response) => {
+  return res.status(200).json({ ok: true, events: recentBitrixReplyWebhooks });
 });
 
 app.post("/sms/send", async (req: Request, res: Response) => {
@@ -530,8 +696,21 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
   }
 
   const event = req.body as BitrixOutboundEvent;
+  console.log("Bitrix reply webhook received", {
+    event: event.event,
+    bodyKeys: Object.keys(req.body ?? {}),
+    dataKeys:
+      event.data && typeof event.data === "object"
+        ? Object.keys(event.data as Record<string, unknown>)
+        : []
+  });
 
   if (event.event?.toUpperCase() !== "ONIMCONNECTORMESSAGEADD") {
+    rememberBitrixReplyWebhook({
+      status: "ignored",
+      event: event.event,
+      body: req.body
+    });
     return res.status(200).json({ ok: true, ignored: true });
   }
 
@@ -566,7 +745,26 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
     (parsePhoneFromParticipantId(bitrixUserId) || undefined) ??
     phoneFromChatId(chatId);
 
+  console.log("Parsed Bitrix reply webhook", {
+    event: event.event,
+    messageId,
+    chatId,
+    bitrixUserId,
+    phone,
+    hasText: Boolean(text)
+  });
+
   if (!messageId || !phone || !text) {
+    rememberBitrixReplyWebhook({
+      status: "missing_fields",
+      event: event.event,
+      messageId,
+      chatId,
+      bitrixUserId,
+      phone,
+      text,
+      body: req.body
+    });
     console.warn("Bitrix webhook missing message fields", {
       hasMessageId: Boolean(messageId),
       hasPhone: Boolean(phone),
@@ -580,10 +778,26 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
   }
 
   if (isDuplicate(processedBitrixMessageIds, messageId)) {
+    rememberBitrixReplyWebhook({
+      status: "duplicate",
+      event: event.event,
+      messageId,
+      chatId,
+      bitrixUserId,
+      phone,
+      text,
+      body: req.body
+    });
     return res.status(200).json({ ok: true, duplicate: true });
   }
 
   try {
+    console.log("Sending Bitrix reply through Telnyx", {
+      to: phone,
+      messageId,
+      text
+    });
+
     const telnyxResponse = await sendSmsThroughTelnyx({
       to: phone,
       text
@@ -605,10 +819,190 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
       });
     }
 
+    rememberBitrixReplyWebhook({
+      status: "sent",
+      event: event.event,
+      messageId,
+      chatId,
+      bitrixUserId,
+      phone,
+      text,
+      body: req.body
+    });
+
     return res.status(200).json({ ok: true });
   } catch (error) {
     console.error("Failed to send outbound SMS through Telnyx", error);
+    rememberBitrixReplyWebhook({
+      status: "failed",
+      event: event.event,
+      messageId,
+      chatId,
+      bitrixUserId,
+      phone,
+      text,
+      body: req.body,
+      error: error instanceof Error ? error.message : "Unknown outbound SMS error"
+    });
     return res.status(500).json({ ok: false, error: "Outbound failed" });
+  }
+});
+
+app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
+  if (!verifyBitrixSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid Bitrix secret" });
+  }
+
+  const payload = req.body as BitrixDealEvent;
+  const eventName = String(payload.event ?? "").toUpperCase();
+  if (eventName !== "ONCRMDEALADD" && eventName !== "ONCRMDEALUPDATE") {
+    return res.status(200).json({ ok: true, ignored: true });
+  }
+
+  const fields = (payload.data?.FIELDS ?? {}) as Record<string, unknown>;
+  const dealIdRaw = payload.data?.ID ?? fields.ID ?? "";
+  const stageIdRaw = fields.STAGE_ID ?? "";
+  const dealId = String(dealIdRaw || "");
+  const stageId = String(stageIdRaw || "");
+
+  if (!dealId) {
+    return res.status(400).json({ ok: false, error: "Missing deal id" });
+  }
+
+  try {
+    const classification = classifyDealEvent(eventName, stageId);
+    const receivedAt = new Date().toISOString();
+    const eventRecord = {
+      receivedAt,
+      event: eventName,
+      dealId,
+      stageId,
+      classification,
+      body: payload
+    };
+    rememberBitrixDealEvent(eventRecord);
+
+    const persistentRecord = {
+      id: `${eventName}:${dealId}:${receivedAt}`,
+      receivedAt,
+      eventName,
+      dealId,
+      stageId,
+      classification,
+      rawBody: payload
+    };
+
+    await saveBitrixDealRecord(persistentRecord);
+    const outboundForward = await forwardBitrixDealRecord(persistentRecord);
+    if (outboundForward?.enabled) {
+      await saveBitrixDealRecord({
+        ...persistentRecord,
+        outboundForward
+      });
+    }
+
+    console.log(
+      "Bitrix deal webhook received",
+      JSON.stringify(
+        {
+          event: eventName,
+          dealId,
+          stageId,
+          classification
+        },
+        null,
+        2
+      )
+    );
+
+    return res.status(200).json({
+      ok: true,
+      tracked: true,
+      dealId,
+      stageId,
+      classification,
+      forwarded: Boolean(outboundForward?.enabled && outboundForward.delivered)
+    });
+  } catch (error) {
+    console.error("Failed to persist/forward Bitrix deal webhook", error);
+    return res.status(500).json({ ok: false, error: "Bitrix deal handling failed" });
+  }
+});
+
+app.post("/webhooks/bitrix/leads", async (req: Request, res: Response) => {
+  if (!verifyBitrixSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid Bitrix secret" });
+  }
+
+  const payload = req.body as BitrixLeadEvent;
+  const eventName = String(payload.event ?? "").toUpperCase();
+  if (eventName !== "ONCRMLEADADD") {
+    return res.status(200).json({ ok: true, ignored: true });
+  }
+
+  const fields = (payload.data?.FIELDS ?? {}) as Record<string, unknown>;
+  const leadIdRaw = payload.data?.ID ?? fields.ID ?? "";
+  const leadId = String(leadIdRaw || "");
+  if (!leadId) {
+    return res.status(400).json({ ok: false, error: "Missing lead id" });
+  }
+
+  try {
+    const leadResponse = await getBitrixLeadById(leadId);
+    const lead = (leadResponse.result ?? {}) as Record<string, unknown>;
+
+    const customerName = buildLeadCustomerName(lead);
+    const serviceType = buildLeadServiceType(lead);
+    const message = buildLeadConfirmationMessage(customerName, serviceType);
+    const customerPhone = readLeadContactValue(lead.PHONE);
+    const customerEmail = readLeadContactValue(lead.EMAIL);
+
+    const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
+      attempted: Boolean(customerPhone),
+      sent: false
+    };
+    const emailResult: { attempted: boolean; sent: boolean; error?: string } = {
+      attempted: Boolean(customerEmail),
+      sent: false
+    };
+
+    if (customerPhone) {
+      try {
+        await sendSmsThroughTelnyx({ to: customerPhone, text: message });
+        smsResult.sent = true;
+      } catch (error) {
+        smsResult.error = error instanceof Error ? error.message : "SMS send failed";
+      }
+    }
+
+    if (customerEmail) {
+      if (canSendEmail()) {
+        try {
+          await sendLeadConfirmationEmail({
+            to: customerEmail,
+            customerName,
+            serviceType
+          });
+          emailResult.sent = true;
+        } catch (error) {
+          emailResult.error = error instanceof Error ? error.message : "Email send failed";
+        }
+      } else {
+        emailResult.error = "SMTP is not configured";
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      leadId,
+      customerName,
+      serviceType,
+      sms: smsResult,
+      email: emailResult
+    });
+  } catch (error) {
+    console.error("Failed to process Bitrix lead webhook", error);
+    return res.status(500).json({ ok: false, error: "Bitrix lead handling failed" });
   }
 });
 
