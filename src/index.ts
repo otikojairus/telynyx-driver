@@ -54,6 +54,8 @@ app.use((req, res, next) => {
 
 const processedTelnyxEvents = new Set<string>();
 const processedBitrixMessageIds = new Set<string>();
+const processedQuotePresentedPaymentTriggers = new Set<string>();
+const processedDealCreateNotifications = new Set<string>();
 const phoneByChatId = new Map<string, string>();
 const phoneByUserId = new Map<string, string>();
 const thirdPartyReplyRouteByPhone = new Map<string, { webhookUrl: string; deliverSmsReplies: boolean }>();
@@ -377,6 +379,10 @@ function classifyDealEvent(eventName: string, stageId: string): "deal_created" |
   return "stage_changed";
 }
 
+function normalizeStageId(value: string): string {
+  return String(value || "").trim().toUpperCase();
+}
+
 function readLeadContactValue(value: unknown): string {
   if (typeof value === "string" && value.trim()) {
     return value.trim();
@@ -523,6 +529,163 @@ function normalizeMoneyAmount(value: unknown): number | null {
   return null;
 }
 
+async function generateAndSendDealPaymentLink(params: {
+  dealId: string;
+  paymentType: "deposit" | "callout";
+  amount?: string | number;
+  amountField?: string;
+  currency?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  updateBitrixDealField?: boolean;
+  sendSms?: boolean;
+  sendEmail?: boolean;
+}) {
+  const dealId = String(params.dealId).trim();
+  const paymentType = params.paymentType;
+  const amount = normalizeMoneyAmount(params.amount);
+  const amountField = String(params.amountField ?? "").trim();
+  const currency = String(params.currency ?? "USD").trim().toUpperCase();
+  let customerName = String(params.customerName ?? "").trim();
+  let customerEmail = String(params.customerEmail ?? "").trim();
+  let customerPhone = normalizePhoneForSms(String(params.customerPhone ?? ""));
+  const updateDealField = params.updateBitrixDealField !== false;
+  const sendSms = params.sendSms !== false;
+  const sendEmail = params.sendEmail !== false;
+
+  const dealResponse = await getBitrixDealById(dealId);
+  const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+  const contactId = String(deal.CONTACT_ID ?? "").trim();
+
+  if (!customerName || !customerPhone || !customerEmail) {
+    if (contactId) {
+      const contactResponse = await getBitrixContactById(contactId);
+      const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+      customerName = customerName || buildLeadCustomerName(contact);
+      customerPhone = customerPhone || normalizePhoneForSms(readLeadContactValue(contact.PHONE));
+      customerEmail = customerEmail || readLeadContactValue(contact.EMAIL);
+    }
+  }
+
+  let resolvedAmount = amount;
+  if (!resolvedAmount) {
+    const byConfigured = config.bitrixDealClientPriceField
+      ? normalizeMoneyAmount(deal[config.bitrixDealClientPriceField])
+      : null;
+    const byOpportunity = normalizeMoneyAmount(deal.OPPORTUNITY);
+    const byNamedField = amountField ? normalizeMoneyAmount(deal[amountField]) : null;
+    resolvedAmount = byNamedField ?? byConfigured ?? byOpportunity;
+  }
+  if (!resolvedAmount) {
+    throw new Error("Missing valid amount. Provide amount or ensure deal has client price/opportunity.");
+  }
+
+  const description =
+    String(params.description ?? "").trim() ||
+    `${paymentType === "deposit" ? "Deposit" : "Callout fee"} for Deal ${dealId}`;
+  const metadata = {
+    dealId,
+    paymentType,
+    dealTitle: String(deal.TITLE ?? ""),
+    ...(params.metadata ?? {})
+  };
+
+  const wave = await createWavePaymentLink({
+    amount: resolvedAmount,
+    currency,
+    description,
+    metadata,
+    customer: {
+      name: customerName || undefined,
+      email: customerEmail || undefined,
+      phone: customerPhone || undefined
+    }
+  });
+
+  const fieldName =
+    paymentType === "deposit" ? config.bitrixDealDepositLinkField : config.bitrixDealCalloutLinkField;
+  let bitrixUpdate: unknown = null;
+  if (updateDealField && fieldName) {
+    bitrixUpdate = await updateBitrixDealFields({
+      dealId,
+      fields: {
+        [fieldName]: wave.link
+      }
+    });
+  }
+
+  const smsText =
+    paymentType === "deposit"
+      ? `Hi ${customerName || "there"}, please pay your deposit here: ${wave.link}`
+      : `Hi ${customerName || "there"}, please pay the callout fee here: ${wave.link}`;
+  const emailBody =
+    `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link for Deal ${dealId}: ${wave.link}`;
+
+  const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
+    attempted: Boolean(sendSms && customerPhone),
+    sent: false
+  };
+  const emailResult: { attempted: boolean; sent: boolean; error?: string } = {
+    attempted: Boolean(sendEmail && customerEmail),
+    sent: false
+  };
+
+  if (sendSms && customerPhone) {
+    try {
+      await sendSmsThroughTelnyx({ to: customerPhone, text: smsText });
+      smsResult.sent = true;
+    } catch (error) {
+      smsResult.error = error instanceof Error ? error.message : "SMS send failed";
+    }
+  }
+
+  if (sendEmail && customerEmail) {
+    if (canSendEmail()) {
+      try {
+        await sendLeadConfirmationEmail({
+          to: customerEmail,
+          customerName: customerName || "Customer",
+          serviceType: "Payment",
+          message: emailBody,
+          subject: `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link`
+        });
+        emailResult.sent = true;
+      } catch (error) {
+        emailResult.error = error instanceof Error ? error.message : "Email send failed";
+      }
+    } else {
+      emailResult.error = "Email API is not configured";
+    }
+  }
+
+  return {
+    ok: true,
+    dealId,
+    paymentType,
+    amount: resolvedAmount,
+    currency,
+    link: wave.link,
+    customer: {
+      name: customerName,
+      email: customerEmail,
+      phone: customerPhone
+    },
+    bitrixField: fieldName || null,
+    bitrixUpdated: Boolean(updateDealField && fieldName),
+    bitrixUpdate,
+    sms: smsResult,
+    email: emailResult,
+    templates: {
+      sms: smsText,
+      emailSubject: `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link`,
+      emailBody
+    }
+  };
+}
+
 function readFirstNonEmptyString(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
@@ -642,7 +805,13 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const status = await getBitrixConnectorStatus();
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status });
+    let appInstall: unknown;
+    try {
+      appInstall = await markBitrixAppInstalled();
+    } catch (e) {
+      appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
+    }
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -1321,7 +1490,7 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
   const dealIdRaw = payload.data?.ID ?? fields.ID ?? "";
   const stageIdRaw = fields.STAGE_ID ?? "";
   const dealId = String(dealIdRaw || "");
-  const stageId = String(stageIdRaw || "");
+  let stageId = String(stageIdRaw || "");
 
   if (!dealId) {
     return res.status(400).json({ ok: false, error: "Missing deal id" });
@@ -1385,6 +1554,9 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
     try {
       const dealResponse = await getBitrixDealById(dealId);
       const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+      if (!stageId) {
+        stageId = String(deal.STAGE_ID ?? "").trim();
+      }
       const contactIdRaw = deal.CONTACT_ID ?? fields.CONTACT_ID ?? "";
       const contactId = String(contactIdRaw || "");
       const serviceType = buildLeadServiceType(deal);
@@ -1417,7 +1589,9 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         const customerPhone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
         const customerEmail = readLeadContactValue(contact.EMAIL);
         const message = buildDealStatusMessage(customerName, serviceType, classification);
-        const shouldSendNotifications = eventName === "ONCRMDEALADD";
+        const shouldSendNotifications =
+          eventName === "ONCRMDEALADD" &&
+          !isDuplicate(processedDealCreateNotifications, `deal-created:${dealId}`);
 
         dealDetails.clientName = customerName;
         dealDetails.phoneNumber = customerPhone;
@@ -1475,6 +1649,64 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       emailResult.error = reason;
     }
 
+    let quotePresentedPaymentLink: {
+      triggered: boolean;
+      duplicate?: boolean;
+      stageMatch?: boolean;
+      paymentType?: string;
+      result?: unknown;
+      error?: string;
+    } = { triggered: false };
+
+    const quoteStageConfigured = String(config.bitrixQuotePresentedStageId ?? "").trim();
+    const stageMatchesQuotePresented =
+      Boolean(quoteStageConfigured) &&
+      normalizeStageId(stageId) === normalizeStageId(quoteStageConfigured);
+
+    if (eventName === "ONCRMDEALUPDATE" && stageMatchesQuotePresented) {
+      const dedupeKey = `${dealId}:${normalizeStageId(stageId)}:quote-presented-payment-link`;
+      if (isDuplicate(processedQuotePresentedPaymentTriggers, dedupeKey)) {
+        quotePresentedPaymentLink = {
+          triggered: false,
+          duplicate: true,
+          stageMatch: true,
+          paymentType: String(config.bitrixQuotePresentedPaymentType ?? "deposit")
+        };
+      } else {
+        try {
+          const paymentType =
+            String(config.bitrixQuotePresentedPaymentType ?? "deposit").toLowerCase() === "callout"
+              ? "callout"
+              : "deposit";
+          const result = await generateAndSendDealPaymentLink({
+            dealId,
+            paymentType,
+            metadata: {
+              source: "bitrix-deal-stage-trigger",
+              triggerStageId: stageId
+            },
+            updateBitrixDealField: true,
+            sendSms: true,
+            sendEmail: true
+          });
+
+          quotePresentedPaymentLink = {
+            triggered: true,
+            stageMatch: true,
+            paymentType,
+            result
+          };
+        } catch (error) {
+          quotePresentedPaymentLink = {
+            triggered: true,
+            stageMatch: true,
+            paymentType: String(config.bitrixQuotePresentedPaymentType ?? "deposit"),
+            error: error instanceof Error ? error.message : "Payment link trigger failed"
+          };
+        }
+      }
+    }
+
     console.log(
       "Bitrix deal webhook received",
       JSON.stringify(
@@ -1482,7 +1714,8 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
           event: eventName,
           dealId,
           stageId,
-          classification
+          classification,
+          quotePresentedPaymentLink
         },
         null,
         2
@@ -1498,7 +1731,8 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       details: dealDetails,
       forwarded: Boolean(outboundForward?.enabled && outboundForward.delivered),
       sms: smsResult,
-      email: emailResult
+      email: emailResult,
+      quotePresentedPaymentLink
     });
   } catch (error) {
     console.error("Failed to persist/forward Bitrix deal webhook", error);
@@ -1728,137 +1962,23 @@ app.post("/webhooks/inbound/bitrix/deals/payment-links", async (req: Request, re
     return res.status(400).json({ ok: false, error: "paymentType must be deposit or callout" });
   }
   try {
-    const dealResponse = await getBitrixDealById(dealId);
-    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
-    const contactId = String(deal.CONTACT_ID ?? "").trim();
-
-    if (!customerName || !customerPhone || !customerEmail) {
-      if (contactId) {
-        const contactResponse = await getBitrixContactById(contactId);
-        const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
-        customerName = customerName || buildLeadCustomerName(contact);
-        customerPhone = customerPhone || normalizePhoneForSms(readLeadContactValue(contact.PHONE));
-        customerEmail = customerEmail || readLeadContactValue(contact.EMAIL);
-      }
-    }
-
-    let resolvedAmount = amount;
-    if (!resolvedAmount) {
-      const byConfigured = config.bitrixDealClientPriceField
-        ? normalizeMoneyAmount(deal[config.bitrixDealClientPriceField])
-        : null;
-      const byOpportunity = normalizeMoneyAmount(deal.OPPORTUNITY);
-      const byNamedField = amountField ? normalizeMoneyAmount(deal[amountField]) : null;
-      resolvedAmount = byNamedField ?? byConfigured ?? byOpportunity;
-    }
-    if (!resolvedAmount) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing valid amount. Provide amount or ensure deal has client price/opportunity."
-      });
-    }
-
-    const description =
-      String(body.description ?? "").trim() ||
-      `${paymentType === "deposit" ? "Deposit" : "Callout fee"} for Deal ${dealId}`;
-    const metadata = {
+    const result = await generateAndSendDealPaymentLink({
       dealId,
-      paymentType,
-      dealTitle: String(deal.TITLE ?? ""),
-      ...(body.metadata ?? {})
-    };
-
-    const wave = await createWavePaymentLink({
-      amount: resolvedAmount,
+      paymentType: paymentType as "deposit" | "callout",
+      amount: amount ?? undefined,
+      amountField,
       currency,
-      description,
-      metadata,
-      customer: {
-        name: customerName || undefined,
-        email: customerEmail || undefined,
-        phone: customerPhone || undefined
-      }
+      customerName,
+      customerEmail,
+      customerPhone,
+      description: body.description,
+      metadata: body.metadata,
+      updateBitrixDealField: updateDealField,
+      sendSms,
+      sendEmail
     });
 
-    const fieldName =
-      paymentType === "deposit" ? config.bitrixDealDepositLinkField : config.bitrixDealCalloutLinkField;
-    let bitrixUpdate: unknown = null;
-    if (updateDealField && fieldName) {
-      bitrixUpdate = await updateBitrixDealFields({
-        dealId,
-        fields: {
-          [fieldName]: wave.link
-        }
-      });
-    }
-
-    const smsText =
-      paymentType === "deposit"
-        ? `Hi ${customerName || "there"}, please pay your deposit here: ${wave.link}`
-        : `Hi ${customerName || "there"}, please pay the callout fee here: ${wave.link}`;
-    const emailBody =
-      `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link for Deal ${dealId}: ${wave.link}`;
-
-    const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
-      attempted: Boolean(sendSms && customerPhone),
-      sent: false
-    };
-    const emailResult: { attempted: boolean; sent: boolean; error?: string } = {
-      attempted: Boolean(sendEmail && customerEmail),
-      sent: false
-    };
-
-    if (sendSms && customerPhone) {
-      try {
-        await sendSmsThroughTelnyx({ to: customerPhone, text: smsText });
-        smsResult.sent = true;
-      } catch (error) {
-        smsResult.error = error instanceof Error ? error.message : "SMS send failed";
-      }
-    }
-
-    if (sendEmail && customerEmail) {
-      if (canSendEmail()) {
-        try {
-          await sendLeadConfirmationEmail({
-            to: customerEmail,
-            customerName: customerName || "Customer",
-            serviceType: "Payment",
-            message: emailBody,
-            subject: `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link`
-          });
-          emailResult.sent = true;
-        } catch (error) {
-          emailResult.error = error instanceof Error ? error.message : "Email send failed";
-        }
-      } else {
-        emailResult.error = "Email API is not configured";
-      }
-    }
-
-    return res.status(200).json({
-      ok: true,
-      dealId,
-      paymentType,
-      amount: resolvedAmount,
-      currency,
-      link: wave.link,
-      customer: {
-        name: customerName,
-        email: customerEmail,
-        phone: customerPhone
-      },
-      bitrixField: fieldName || null,
-      bitrixUpdated: Boolean(updateDealField && fieldName),
-      bitrixUpdate,
-      sms: smsResult,
-      email: emailResult,
-      templates: {
-        sms: smsText,
-        emailSubject: `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link`,
-        emailBody
-      }
-    });
+    return res.status(200).json(result);
   } catch (error) {
     console.error("Failed to create Wave payment link for deal", error);
     return res.status(500).json({

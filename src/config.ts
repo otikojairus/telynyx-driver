@@ -27,6 +27,7 @@ export const config = {
   bitrixDealDepositLinkField: process.env.BITRIX_DEAL_DEPOSIT_LINK_FIELD ?? "",
   bitrixDealCalloutLinkField: process.env.BITRIX_DEAL_CALLOUT_LINK_FIELD ?? "",
   bitrixQuotePresentedStageId: process.env.BITRIX_QUOTE_PRESENTED_STAGE_ID ?? "",
+  bitrixQuotePresentedPaymentType: process.env.BITRIX_QUOTE_PRESENTED_PAYMENT_TYPE ?? "deposit",
   bitrixDealForwardWebhookUrl: process.env.BITRIX_DEAL_FORWARD_WEBHOOK_URL ?? "",
   dataDir: process.env.DATA_DIR ?? "data",
   telnyxApiKey: requireEnv("TELNYX_API_KEY"),

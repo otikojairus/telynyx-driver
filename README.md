@@ -63,6 +63,7 @@ INBOUND_DEAL_WEBHOOK_SECRET=
 BITRIX_DEAL_FORWARD_WEBHOOK_URL=
 BITRIX_LEAD_SERVICE_FIELD=UF_CRM_SERVICE_TYPE
 BITRIX_QUOTE_PRESENTED_STAGE_ID=
+BITRIX_QUOTE_PRESENTED_PAYMENT_TYPE=deposit
 
 TELNYX_API_KEY=your_telnyx_api_key
 TELNYX_FROM_NUMBER=+18447500107
@@ -201,6 +202,9 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - Auth:
   - If `BITRIX_OUTBOUND_SECRET` is set, requires header `x-bitrix-secret`.
 - Request body: Bitrix `OnCrmDealAdd` / `OnCrmDealUpdate` webhook payload.
+- Notes:
+  - If `BITRIX_QUOTE_PRESENTED_STAGE_ID` is set and a deal is moved to that stage, middleware auto-generates and sends a payment link.
+  - Payment type for this auto-trigger is controlled by `BITRIX_QUOTE_PRESENTED_PAYMENT_TYPE` (`deposit` or `callout`, default `deposit`).
 - Response (shape):
 
 ```json
@@ -463,6 +467,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `BITRIX_DEAL_DEPOSIT_LINK_FIELD` (optional): Bitrix deal field code where deposit payment link is stored.
 - `BITRIX_DEAL_CALLOUT_LINK_FIELD` (optional): Bitrix deal field code where callout fee payment link is stored.
 - `BITRIX_QUOTE_PRESENTED_STAGE_ID`: Default stage ID used by `/webhooks/inbound/bitrix/deals/quote-presented`.
+- `BITRIX_QUOTE_PRESENTED_PAYMENT_TYPE`: Payment type used by auto-trigger on quote-presented stage (`deposit` or `callout`).
 - `EMAIL_API_URL`: endpoint used to send lead confirmation emails (default: Pipeproof API).
 - `WAVE_API_URL`: Wave GraphQL endpoint (default: `https://gql.waveapps.com/graphql/public`).
 - `WAVE_API_KEY`: Bearer token used by payment-link creation route.
