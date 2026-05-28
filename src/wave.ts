@@ -26,29 +26,42 @@ async function callWaveGraphQL<T>(
     throw new Error("Wave is not configured. Set WAVE_API_KEY.");
   }
 
-  const response = await axios.post<WaveGraphQLResponse<T>>(
-    config.waveApiUrl,
-    { query, variables },
-    {
-      timeout: 20000,
-      headers: {
-        Authorization: `Bearer ${config.waveApiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json"
+  try {
+    const response = await axios.post<WaveGraphQLResponse<T>>(
+      config.waveApiUrl,
+      { query, variables },
+      {
+        timeout: 20000,
+        headers: {
+          Authorization: `Bearer ${config.waveApiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        }
       }
+    );
+
+    if (response.data.errors?.length) {
+      const message = response.data.errors.map((e) => e.message || "Unknown GraphQL error").join("; ");
+      throw new Error(`Wave GraphQL error: ${message}`);
     }
-  );
 
-  if (response.data.errors?.length) {
-    const message = response.data.errors.map((e) => e.message || "Unknown GraphQL error").join("; ");
-    throw new Error(`Wave GraphQL error: ${message}`);
+    if (!response.data.data) {
+      throw new Error("Wave GraphQL returned empty data.");
+    }
+
+    return response.data.data;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const details = error.response?.data as WaveGraphQLResponse<unknown> | undefined;
+      const graphqlErrors = details?.errors ?? [];
+      if (graphqlErrors.length > 0) {
+        const message = graphqlErrors.map((e) => e.message || "Unknown GraphQL error").join("; ");
+        throw new Error(`Wave GraphQL error: ${message}`);
+      }
+      throw new Error(`Wave GraphQL request failed with status ${error.response?.status ?? "unknown"}`);
+    }
+    throw error;
   }
-
-  if (!response.data.data) {
-    throw new Error("Wave GraphQL returned empty data.");
-  }
-
-  return response.data.data;
 }
 
 async function createWaveCustomer(params: {
@@ -135,7 +148,7 @@ async function createWaveInvoice(params: {
           productId: params.productId,
           description: params.description,
           quantity: 1,
-          price: params.amount
+          unitPrice: params.amount
         }
       ]
     }
