@@ -62,7 +62,6 @@ THIRD_PARTY_WEBHOOK_SECRET=
 INBOUND_DEAL_WEBHOOK_SECRET=
 BITRIX_DEAL_FORWARD_WEBHOOK_URL=
 BITRIX_LEAD_SERVICE_FIELD=UF_CRM_SERVICE_TYPE
-BITRIX_DEAL_CLIENT_PRICE_FIELD=UF_CRM_CLIENT_PRICE
 BITRIX_QUOTE_PRESENTED_STAGE_ID=
 
 TELNYX_API_KEY=your_telnyx_api_key
@@ -73,6 +72,11 @@ TELNYX_WEBHOOK_STORE_LIMIT=1000
 
 EMAIL_API_URL=https://pipeproof.com/wp-json/email-api/v1/send
 LEAD_NOTIFICATION_EMAIL_SUBJECT=PRG Service Request Confirmation
+
+WAVE_API_URL=
+WAVE_API_KEY=
+WAVE_CREATE_LINK_PATH=/checkout/links
+WAVE_WEBHOOK_SECRET=
 ```
 
 `PUBLIC_BASE_URL` must be reachable by both Bitrix and Telnyx over HTTPS.
@@ -272,6 +276,40 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
   - `clientPrice` is required and is persisted to `BITRIX_DEAL_CLIENT_PRICE_FIELD`.
 - Response: `{ ok, moved, dealId, stageId, quote: { clientPrice, clientPriceField }, result }`.
 
+### `POST /webhooks/inbound/bitrix/deals/payment-links`
+
+- Purpose: Create a Wave payment link for `deposit` or `callout`, save it to Deal custom field, and send it to customer via SMS/email.
+- Auth:
+  - If `INBOUND_DEAL_WEBHOOK_SECRET` is set, requires header `x-inbound-secret`.
+- Request body:
+
+```json
+{
+  "dealId": "12345",
+  "paymentType": "deposit",
+  "amount": 5000,
+  "amountField": "UF_CRM_1779961549",
+  "currency": "KES",
+  "customerName": "Jane Doe",
+  "customerEmail": "jane@example.com",
+  "customerPhone": "+254700000000",
+  "sendSms": true,
+  "sendEmail": true,
+  "description": "Deposit for plumbing job",
+  "metadata": {
+    "jobCode": "PRG-9382"
+  }
+}
+```
+
+- Notes:
+  - `paymentType` must be `deposit` or `callout`.
+  - `amount` is optional; if omitted, middleware tries `amountField`, then `OPPORTUNITY` (and `BITRIX_DEAL_CLIENT_PRICE_FIELD` only if configured).
+  - `customerName`, `customerPhone`, and `customerEmail` are optional; middleware fetches from linked Deal contact.
+  - Link is saved to a Deal field only if `BITRIX_DEAL_DEPOSIT_LINK_FIELD` / `BITRIX_DEAL_CALLOUT_LINK_FIELD` are configured.
+  - `sendSms` and `sendEmail` default to `true`.
+- Response: `{ ok, dealId, paymentType, amount, currency, link, customer, bitrixField, sms, email, templates, ... }`.
+
 ### `POST /webhooks/inbound/bitrix/channel/message`
 
 - Purpose: Allow a third-party app to write a message into Bitrix Open Channel and register a callback URL for replies.
@@ -411,9 +449,14 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `TELNYX_FORWARD_WEBHOOK_URL`: Forwards stored inbound Telnyx SMS webhooks to your endpoint.
 - `TELNYX_CALL_FORWARD_WEBHOOK_URL`: Forwards stored Telnyx call webhooks to your endpoint.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
-- `BITRIX_DEAL_CLIENT_PRICE_FIELD`: Bitrix deal field code where final client-facing price is stored.
+- `BITRIX_DEAL_CLIENT_PRICE_FIELD` (optional): Bitrix deal field code where final client-facing price is stored.
+- `BITRIX_DEAL_DEPOSIT_LINK_FIELD` (optional): Bitrix deal field code where deposit payment link is stored.
+- `BITRIX_DEAL_CALLOUT_LINK_FIELD` (optional): Bitrix deal field code where callout fee payment link is stored.
 - `BITRIX_QUOTE_PRESENTED_STAGE_ID`: Default stage ID used by `/webhooks/inbound/bitrix/deals/quote-presented`.
 - `EMAIL_API_URL`: endpoint used to send lead confirmation emails (default: Pipeproof API).
+- `WAVE_API_URL`: Base API URL for your Wave/checkout provider.
+- `WAVE_API_KEY`: Bearer token used by payment-link creation route.
+- `WAVE_CREATE_LINK_PATH`: API path to create hosted links (default `/checkout/links`).
 
 ## Bitrix UI Setup (CSR View)
 

@@ -283,6 +283,16 @@ export async function updateBitrixDealStage(params: {
   });
 }
 
+export async function updateBitrixDealFields(params: {
+  dealId: string;
+  fields: Record<string, unknown>;
+}) {
+  return callBitrixMethod("crm.deal.update", {
+    id: params.dealId,
+    fields: params.fields
+  });
+}
+
 export async function listBitrixDealCategories() {
   return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("crm.dealcategory.list", {});
 }

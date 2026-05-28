@@ -23,7 +23,9 @@ export const config = {
   thirdPartyWebhookSecret: process.env.THIRD_PARTY_WEBHOOK_SECRET ?? "",
   inboundDealWebhookSecret: process.env.INBOUND_DEAL_WEBHOOK_SECRET ?? "",
   bitrixLeadServiceField: process.env.BITRIX_LEAD_SERVICE_FIELD ?? "UF_CRM_SERVICE_TYPE",
-  bitrixDealClientPriceField: process.env.BITRIX_DEAL_CLIENT_PRICE_FIELD ?? "UF_CRM_CLIENT_PRICE",
+  bitrixDealClientPriceField: process.env.BITRIX_DEAL_CLIENT_PRICE_FIELD ?? "",
+  bitrixDealDepositLinkField: process.env.BITRIX_DEAL_DEPOSIT_LINK_FIELD ?? "",
+  bitrixDealCalloutLinkField: process.env.BITRIX_DEAL_CALLOUT_LINK_FIELD ?? "",
   bitrixQuotePresentedStageId: process.env.BITRIX_QUOTE_PRESENTED_STAGE_ID ?? "",
   bitrixDealForwardWebhookUrl: process.env.BITRIX_DEAL_FORWARD_WEBHOOK_URL ?? "",
   dataDir: process.env.DATA_DIR ?? "data",
@@ -34,5 +36,9 @@ export const config = {
   telnyxCallForwardWebhookUrl: process.env.TELNYX_CALL_FORWARD_WEBHOOK_URL ?? "",
   telnyxWebhookStoreLimit: Number(process.env.TELNYX_WEBHOOK_STORE_LIMIT ?? 1000),
   emailApiUrl: process.env.EMAIL_API_URL ?? "https://pipeproof.com/wp-json/email-api/v1/send",
-  leadNotificationEmailSubject: process.env.LEAD_NOTIFICATION_EMAIL_SUBJECT ?? "PRG Service Request Confirmation"
+  leadNotificationEmailSubject: process.env.LEAD_NOTIFICATION_EMAIL_SUBJECT ?? "PRG Service Request Confirmation",
+  waveApiUrl: process.env.WAVE_API_URL ?? "",
+  waveApiKey: process.env.WAVE_API_KEY ?? "",
+  waveCreateLinkPath: process.env.WAVE_CREATE_LINK_PATH ?? "/checkout/links",
+  waveWebhookSecret: process.env.WAVE_WEBHOOK_SECRET ?? ""
 };
