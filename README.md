@@ -62,6 +62,8 @@ THIRD_PARTY_WEBHOOK_SECRET=
 INBOUND_DEAL_WEBHOOK_SECRET=
 BITRIX_DEAL_FORWARD_WEBHOOK_URL=
 BITRIX_LEAD_SERVICE_FIELD=UF_CRM_SERVICE_TYPE
+BITRIX_DEAL_CLIENT_PRICE_FIELD=UF_CRM_CLIENT_PRICE
+BITRIX_QUOTE_PRESENTED_STAGE_ID=
 
 TELNYX_API_KEY=your_telnyx_api_key
 TELNYX_FROM_NUMBER=+18447500107
@@ -236,13 +238,39 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 {
   "dealId": "12345",
   "stageId": "C1:NEW",
+  "clientPrice": 12500,
   "fields": {
     "COMMENTS": "Moved by external system"
   }
 }
 ```
 
-- Response: `{ ok, moved, dealId, stageId, result }`.
+- Notes:
+  - If `clientPrice` is provided, it is written to the custom field in `BITRIX_DEAL_CLIENT_PRICE_FIELD` (default: `UF_CRM_CLIENT_PRICE`).
+- Response: `{ ok, moved, dealId, stageId, clientPrice, clientPriceField, result }`.
+
+### `POST /webhooks/inbound/bitrix/deals/quote-presented`
+
+- Purpose: Move a deal to the Quote Presented stage and store the final client-facing price (post-markup).
+- Auth:
+  - If `INBOUND_DEAL_WEBHOOK_SECRET` is set, requires header `x-inbound-secret`.
+- Request body:
+
+```json
+{
+  "dealId": "12345",
+  "clientPrice": 14500,
+  "stageId": "C1:QUOTE_PRESENTED",
+  "fields": {
+    "COMMENTS": "Quote shared with customer"
+  }
+}
+```
+
+- Notes:
+  - `stageId` is optional if `BITRIX_QUOTE_PRESENTED_STAGE_ID` is set.
+  - `clientPrice` is required and is persisted to `BITRIX_DEAL_CLIENT_PRICE_FIELD`.
+- Response: `{ ok, moved, dealId, stageId, quote: { clientPrice, clientPriceField }, result }`.
 
 ### `POST /webhooks/inbound/bitrix/channel/message`
 
@@ -383,7 +411,17 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `TELNYX_FORWARD_WEBHOOK_URL`: Forwards stored inbound Telnyx SMS webhooks to your endpoint.
 - `TELNYX_CALL_FORWARD_WEBHOOK_URL`: Forwards stored Telnyx call webhooks to your endpoint.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
+- `BITRIX_DEAL_CLIENT_PRICE_FIELD`: Bitrix deal field code where final client-facing price is stored.
+- `BITRIX_QUOTE_PRESENTED_STAGE_ID`: Default stage ID used by `/webhooks/inbound/bitrix/deals/quote-presented`.
 - `EMAIL_API_URL`: endpoint used to send lead confirmation emails (default: Pipeproof API).
+
+## Bitrix UI Setup (CSR View)
+
+To display Client Price prominently in `Quote Presented to Client`:
+
+1. Create a custom Deal field in Bitrix and set its code to match `BITRIX_DEAL_CLIENT_PRICE_FIELD` (example: `UF_CRM_CLIENT_PRICE`).
+2. Open CRM Deal pipeline settings and edit the `Quote Presented to Client` stage card layout.
+3. Add the Client Price field to the top section of the stage form and mark it visible for CSR users.
 
 ## Debug Commands
 

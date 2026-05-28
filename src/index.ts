@@ -485,6 +485,24 @@ function buildDealStatusMessage(name: string, serviceType: string, classificatio
   return `Hi ${name}, this is PRG. Update on your service request for ${serviceType}: ${statusText}.`;
 }
 
+function normalizeClientPrice(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value.toFixed(2);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const numeric = Number(trimmed.replace(/,/g, ""));
+    if (Number.isFinite(numeric)) {
+      return numeric.toFixed(2);
+    }
+    return trimmed;
+  }
+  return null;
+}
+
 function readFirstNonEmptyString(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
@@ -1433,11 +1451,19 @@ app.post("/webhooks/inbound/bitrix/deals/status", async (req: Request, res: Resp
   const body = req.body as {
     dealId?: string | number;
     stageId?: string;
+    clientPrice?: string | number;
     fields?: Record<string, unknown>;
   };
 
   const dealId = String(body.dealId ?? "").trim();
   const stageId = String(body.stageId ?? "").trim();
+  const normalizedClientPrice = normalizeClientPrice(body.clientPrice);
+  const extraFields: Record<string, unknown> = {
+    ...(body.fields ?? {})
+  };
+  if (normalizedClientPrice) {
+    extraFields[config.bitrixDealClientPriceField] = normalizedClientPrice;
+  }
 
   if (!dealId || !stageId) {
     return res.status(400).json({ ok: false, error: "Missing dealId or stageId" });
@@ -1447,7 +1473,7 @@ app.post("/webhooks/inbound/bitrix/deals/status", async (req: Request, res: Resp
     const result = await updateBitrixDealStage({
       dealId,
       stageId,
-      extraFields: body.fields
+      extraFields
     });
 
     return res.status(200).json({
@@ -1455,11 +1481,68 @@ app.post("/webhooks/inbound/bitrix/deals/status", async (req: Request, res: Resp
       moved: true,
       dealId,
       stageId,
+      clientPrice: normalizedClientPrice,
+      clientPriceField: config.bitrixDealClientPriceField,
       result
     });
   } catch (error) {
     console.error("Failed to update Bitrix deal stage from inbound webhook", error);
     return res.status(500).json({ ok: false, error: "Bitrix deal stage update failed" });
+  }
+});
+
+app.post("/webhooks/inbound/bitrix/deals/quote-presented", async (req: Request, res: Response) => {
+  if (!verifyInboundDealSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid inbound webhook secret" });
+  }
+
+  const body = req.body as {
+    dealId?: string | number;
+    stageId?: string;
+    clientPrice?: string | number;
+    fields?: Record<string, unknown>;
+  };
+
+  const dealId = String(body.dealId ?? "").trim();
+  const stageId = String(body.stageId ?? config.bitrixQuotePresentedStageId).trim();
+  const normalizedClientPrice = normalizeClientPrice(body.clientPrice);
+
+  if (!dealId) {
+    return res.status(400).json({ ok: false, error: "Missing dealId" });
+  }
+  if (!stageId) {
+    return res.status(400).json({ ok: false, error: "Missing stageId and BITRIX_QUOTE_PRESENTED_STAGE_ID is not set" });
+  }
+  if (!normalizedClientPrice) {
+    return res.status(400).json({ ok: false, error: "Missing clientPrice" });
+  }
+
+  const extraFields: Record<string, unknown> = {
+    ...(body.fields ?? {}),
+    [config.bitrixDealClientPriceField]: normalizedClientPrice
+  };
+
+  try {
+    const result = await updateBitrixDealStage({
+      dealId,
+      stageId,
+      extraFields
+    });
+
+    return res.status(200).json({
+      ok: true,
+      moved: true,
+      dealId,
+      stageId,
+      quote: {
+        clientPrice: normalizedClientPrice,
+        clientPriceField: config.bitrixDealClientPriceField
+      },
+      result
+    });
+  } catch (error) {
+    console.error("Failed to move deal to quote-presented stage", error);
+    return res.status(500).json({ ok: false, error: "Bitrix quote-presented update failed" });
   }
 });
 

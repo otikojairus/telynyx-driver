@@ -23,6 +23,8 @@ export const config = {
   thirdPartyWebhookSecret: process.env.THIRD_PARTY_WEBHOOK_SECRET ?? "",
   inboundDealWebhookSecret: process.env.INBOUND_DEAL_WEBHOOK_SECRET ?? "",
   bitrixLeadServiceField: process.env.BITRIX_LEAD_SERVICE_FIELD ?? "UF_CRM_SERVICE_TYPE",
+  bitrixDealClientPriceField: process.env.BITRIX_DEAL_CLIENT_PRICE_FIELD ?? "UF_CRM_CLIENT_PRICE",
+  bitrixQuotePresentedStageId: process.env.BITRIX_QUOTE_PRESENTED_STAGE_ID ?? "",
   bitrixDealForwardWebhookUrl: process.env.BITRIX_DEAL_FORWARD_WEBHOOK_URL ?? "",
   dataDir: process.env.DATA_DIR ?? "data",
   telnyxApiKey: requireEnv("TELNYX_API_KEY"),
