@@ -12,3 +12,4 @@ node_modules/
 dist/
 business_id.json
 product_id.json
+testres.json

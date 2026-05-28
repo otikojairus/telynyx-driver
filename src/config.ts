@@ -35,7 +35,7 @@ export const config = {
   telnyxForwardWebhookUrl: process.env.TELNYX_FORWARD_WEBHOOK_URL ?? "",
   telnyxCallForwardWebhookUrl: process.env.TELNYX_CALL_FORWARD_WEBHOOK_URL ?? "",
   telnyxWebhookStoreLimit: Number(process.env.TELNYX_WEBHOOK_STORE_LIMIT ?? 1000),
-  emailApiUrl: process.env.EMAIL_API_URL ?? "https://pipeproof.com/wp-json/email-api/v1/send",
+  emailApiUrl: process.env.EMAIL_API_URL ?? "https://proofresponse.com/wp-json/email-api/v1/send",
   leadNotificationEmailSubject: process.env.LEAD_NOTIFICATION_EMAIL_SUBJECT ?? "PRG Service Request Confirmation",
   waveApiUrl: process.env.WAVE_API_URL ?? "https://gql.waveapps.com/graphql/public",
   waveApiKey: process.env.WAVE_API_KEY ?? "",
