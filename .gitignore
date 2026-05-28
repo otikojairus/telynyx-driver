@@ -10,3 +10,5 @@ data/
 # Dependencies and build output
 node_modules/
 dist/
+business_id.json
+product_id.json

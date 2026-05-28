@@ -37,8 +37,9 @@ export const config = {
   telnyxWebhookStoreLimit: Number(process.env.TELNYX_WEBHOOK_STORE_LIMIT ?? 1000),
   emailApiUrl: process.env.EMAIL_API_URL ?? "https://pipeproof.com/wp-json/email-api/v1/send",
   leadNotificationEmailSubject: process.env.LEAD_NOTIFICATION_EMAIL_SUBJECT ?? "PRG Service Request Confirmation",
-  waveApiUrl: process.env.WAVE_API_URL ?? "",
+  waveApiUrl: process.env.WAVE_API_URL ?? "https://gql.waveapps.com/graphql/public",
   waveApiKey: process.env.WAVE_API_KEY ?? "",
-  waveCreateLinkPath: process.env.WAVE_CREATE_LINK_PATH ?? "/checkout/links",
+  waveBusinessId: process.env.WAVE_BUSINESS_ID ?? "",
+  waveProductId: process.env.WAVE_PRODUCT_ID ?? "",
   waveWebhookSecret: process.env.WAVE_WEBHOOK_SECRET ?? ""
 };

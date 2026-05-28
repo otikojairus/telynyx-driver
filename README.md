@@ -73,9 +73,10 @@ TELNYX_WEBHOOK_STORE_LIMIT=1000
 EMAIL_API_URL=https://pipeproof.com/wp-json/email-api/v1/send
 LEAD_NOTIFICATION_EMAIL_SUBJECT=PRG Service Request Confirmation
 
-WAVE_API_URL=
+WAVE_API_URL=https://gql.waveapps.com/graphql/public
 WAVE_API_KEY=
-WAVE_CREATE_LINK_PATH=/checkout/links
+WAVE_BUSINESS_ID=
+WAVE_PRODUCT_ID=
 WAVE_WEBHOOK_SECRET=
 ```
 
@@ -454,9 +455,10 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `BITRIX_DEAL_CALLOUT_LINK_FIELD` (optional): Bitrix deal field code where callout fee payment link is stored.
 - `BITRIX_QUOTE_PRESENTED_STAGE_ID`: Default stage ID used by `/webhooks/inbound/bitrix/deals/quote-presented`.
 - `EMAIL_API_URL`: endpoint used to send lead confirmation emails (default: Pipeproof API).
-- `WAVE_API_URL`: Base API URL for your Wave/checkout provider.
+- `WAVE_API_URL`: Wave GraphQL endpoint (default: `https://gql.waveapps.com/graphql/public`).
 - `WAVE_API_KEY`: Bearer token used by payment-link creation route.
-- `WAVE_CREATE_LINK_PATH`: API path to create hosted links (default `/checkout/links`).
+- `WAVE_BUSINESS_ID`: Wave business ID used when creating invoice links.
+- `WAVE_PRODUCT_ID`: Wave product ID used for invoice line items when creating payment links.
 
 ## Bitrix UI Setup (CSR View)
 

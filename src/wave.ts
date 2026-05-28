@@ -13,70 +13,178 @@ export interface CreateWavePaymentLinkInput {
   };
 }
 
-function extractPaymentLink(responseData: unknown): string {
-  if (!responseData || typeof responseData !== "object") {
-    return "";
+interface WaveGraphQLResponse<T> {
+  data?: T;
+  errors?: Array<{ message?: string }>;
+}
+
+async function callWaveGraphQL<T>(
+  query: string,
+  variables: Record<string, unknown>
+): Promise<T> {
+  if (!config.waveApiKey) {
+    throw new Error("Wave is not configured. Set WAVE_API_KEY.");
   }
 
-  const data = responseData as Record<string, unknown>;
-  const direct =
-    data.url ?? data.checkout_url ?? data.payment_url ?? data.hosted_url ?? data.link ?? "";
-
-  if (typeof direct === "string" && direct.trim()) {
-    return direct.trim();
-  }
-
-  const nested = data.data;
-  if (nested && typeof nested === "object") {
-    const nestedRecord = nested as Record<string, unknown>;
-    const nestedDirect =
-      nestedRecord.url ??
-      nestedRecord.checkout_url ??
-      nestedRecord.payment_url ??
-      nestedRecord.hosted_url ??
-      nestedRecord.link ??
-      "";
-    if (typeof nestedDirect === "string" && nestedDirect.trim()) {
-      return nestedDirect.trim();
+  const response = await axios.post<WaveGraphQLResponse<T>>(
+    config.waveApiUrl,
+    { query, variables },
+    {
+      timeout: 20000,
+      headers: {
+        Authorization: `Bearer ${config.waveApiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      }
     }
+  );
+
+  if (response.data.errors?.length) {
+    const message = response.data.errors.map((e) => e.message || "Unknown GraphQL error").join("; ");
+    throw new Error(`Wave GraphQL error: ${message}`);
   }
 
-  return "";
+  if (!response.data.data) {
+    throw new Error("Wave GraphQL returned empty data.");
+  }
+
+  return response.data.data;
+}
+
+async function createWaveCustomer(params: {
+  businessId: string;
+  name: string;
+  email?: string;
+  phone?: string;
+}) {
+  const query = `
+    mutation($input: CustomerCreateInput!) {
+      customerCreate(input: $input) {
+        didSucceed
+        inputErrors { message code path }
+        customer { id name email mobile }
+      }
+    }
+  `;
+
+  const data = await callWaveGraphQL<{
+    customerCreate?: {
+      didSucceed?: boolean;
+      inputErrors?: Array<{ message?: string }>;
+      customer?: { id?: string };
+    };
+  }>(query, {
+    input: {
+      businessId: params.businessId,
+      name: params.name,
+      email: params.email || undefined,
+      mobile: params.phone || undefined
+    }
+  });
+
+  const result = data.customerCreate;
+  if (!result?.didSucceed || !result.customer?.id) {
+    const reason = (result?.inputErrors ?? [])
+      .map((e) => e.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(`Wave customerCreate failed${reason ? `: ${reason}` : ""}`);
+  }
+
+  return result.customer.id;
+}
+
+async function createWaveInvoice(params: {
+  businessId: string;
+  customerId: string;
+  productId: string;
+  amount: number;
+  description: string;
+  currency: string;
+}) {
+  const query = `
+    mutation($input: InvoiceCreateInput!) {
+      invoiceCreate(input: $input) {
+        didSucceed
+        inputErrors { message code path }
+        invoice {
+          id
+          viewUrl
+          status
+          total { value }
+          currency { code }
+        }
+      }
+    }
+  `;
+
+  const data = await callWaveGraphQL<{
+    invoiceCreate?: {
+      didSucceed?: boolean;
+      inputErrors?: Array<{ message?: string }>;
+      invoice?: { id?: string; viewUrl?: string };
+    };
+  }>(query, {
+    input: {
+      businessId: params.businessId,
+      customerId: params.customerId,
+      status: "SAVED",
+      currency: params.currency,
+      items: [
+        {
+          productId: params.productId,
+          description: params.description,
+          quantity: 1,
+          price: params.amount
+        }
+      ]
+    }
+  });
+
+  const result = data.invoiceCreate;
+  if (!result?.didSucceed || !result.invoice?.viewUrl) {
+    const reason = (result?.inputErrors ?? [])
+      .map((e) => e.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(`Wave invoiceCreate failed${reason ? `: ${reason}` : ""}`);
+  }
+
+  return result.invoice.viewUrl;
 }
 
 export async function createWavePaymentLink(input: CreateWavePaymentLinkInput): Promise<{
   link: string;
   providerResponse: unknown;
 }> {
-  if (!config.waveApiUrl || !config.waveApiKey) {
-    throw new Error("Wave is not configured. Set WAVE_API_URL and WAVE_API_KEY.");
+  if (!config.waveBusinessId) {
+    throw new Error("Missing WAVE_BUSINESS_ID.");
+  }
+  if (!config.waveProductId) {
+    throw new Error("Missing WAVE_PRODUCT_ID.");
   }
 
-  const url = new URL(config.waveCreateLinkPath, config.waveApiUrl).toString();
-  const payload = {
-    amount: input.amount,
-    currency: input.currency,
-    description: input.description,
-    metadata: input.metadata,
-    customer: input.customer
-  };
-
-  const response = await axios.post(url, payload, {
-    timeout: 20000,
-    headers: {
-      Authorization: `Bearer ${config.waveApiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    }
+  const customerId = await createWaveCustomer({
+    businessId: config.waveBusinessId,
+    name: input.customer?.name || "Customer",
+    email: input.customer?.email,
+    phone: input.customer?.phone
   });
 
-  const link = extractPaymentLink(response.data);
-  if (!link) {
-    throw new Error("Wave link creation succeeded but no payment URL was found in response.");
-  }
+  const link = await createWaveInvoice({
+    businessId: config.waveBusinessId,
+    customerId,
+    productId: config.waveProductId,
+    amount: input.amount,
+    description: input.description,
+    currency: input.currency
+  });
 
   return {
     link,
-    providerResponse: response.data
+    providerResponse: {
+      businessId: config.waveBusinessId,
+      customerId
+    }
   };
 }
