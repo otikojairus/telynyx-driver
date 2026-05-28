@@ -12,6 +12,7 @@ import {
   findBitrixUserByEmail,
   getBitrixContactById,
   listBitrixDealCategories,
+  listBitrixDealFields,
   listBitrixStatuses,
   getBitrixDealById,
   getBitrixLeadById,
@@ -722,6 +723,17 @@ app.get("/debug/bitrix/deals/stages", async (_req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to load Bitrix deal stages", error);
     return res.status(500).json({ ok: false, error: "Bitrix deal stages lookup failed" });
+  }
+});
+
+app.get("/debug/bitrix/deals/fields", async (_req: Request, res: Response) => {
+  try {
+    const fieldsResponse = await listBitrixDealFields();
+    const fields = (fieldsResponse.result ?? {}) as Record<string, unknown>;
+    return res.status(200).json({ ok: true, count: Object.keys(fields).length, fields });
+  } catch (error) {
+    console.error("Failed to load Bitrix deal fields", error);
+    return res.status(500).json({ ok: false, error: "Bitrix deal fields lookup failed" });
   }
 });
 

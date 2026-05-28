@@ -287,6 +287,10 @@ export async function listBitrixDealCategories() {
   return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("crm.dealcategory.list", {});
 }
 
+export async function listBitrixDealFields() {
+  return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.deal.fields", {});
+}
+
 export async function listBitrixStatuses(filter: Record<string, unknown>) {
   return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("crm.status.list", {
     filter
