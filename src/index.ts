@@ -1259,6 +1259,7 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         const customerPhone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
         const customerEmail = readLeadContactValue(contact.EMAIL);
         const message = buildDealStatusMessage(customerName, serviceType, classification);
+        const shouldSendNotifications = eventName === "ONCRMDEALADD";
 
         dealDetails.clientName = customerName;
         dealDetails.phoneNumber = customerPhone;
@@ -1268,37 +1269,39 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
           dealDetails.addressPostalCode = [contactAddress, contactPostalCode].filter(Boolean).join(" / ");
         }
 
-        smsResult.attempted = Boolean(customerPhone);
-        emailResult.attempted = Boolean(customerEmail);
+        if (shouldSendNotifications) {
+          smsResult.attempted = Boolean(customerPhone);
+          emailResult.attempted = Boolean(customerEmail);
 
-        if (customerPhone) {
-          try {
-            await sendSmsThroughTelnyx({ to: customerPhone, text: message });
-            smsResult.sent = true;
-          } catch (error) {
-            smsResult.error = error instanceof Error ? error.message : "SMS send failed";
-          }
-        }
-
-        if (customerEmail) {
-          if (canSendEmail()) {
+          if (customerPhone) {
             try {
-              await sendLeadConfirmationEmail({
-                to: customerEmail,
-                customerName,
-                serviceType,
-                message,
-                subject: "PRG Service Request Status Update"
-              });
-              emailResult.sent = true;
+              await sendSmsThroughTelnyx({ to: customerPhone, text: message });
+              smsResult.sent = true;
             } catch (error) {
-              emailResult.error = error instanceof Error ? error.message : "Email send failed";
+              smsResult.error = error instanceof Error ? error.message : "SMS send failed";
             }
-          } else {
-            emailResult.error = "Email API is not configured";
+          }
+
+          if (customerEmail) {
+            if (canSendEmail()) {
+              try {
+                await sendLeadConfirmationEmail({
+                  to: customerEmail,
+                  customerName,
+                  serviceType,
+                  message,
+                  subject: "PRG Service Request Status Update"
+                });
+                emailResult.sent = true;
+              } catch (error) {
+                emailResult.error = error instanceof Error ? error.message : "Email send failed";
+              }
+            } else {
+              emailResult.error = "Email API is not configured";
+            }
           }
         }
-      } else {
+      } else if (eventName === "ONCRMDEALADD") {
         smsResult.error = "Deal has no CONTACT_ID";
         emailResult.error = "Deal has no CONTACT_ID";
       }
