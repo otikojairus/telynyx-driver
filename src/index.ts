@@ -594,10 +594,18 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
 
     return res.status(200).send(`
       <html>
+        <head>
+          <script src="//api.bitrix24.com/api/v1/"></script>
+        </head>
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
           <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status }, null, 2)}</pre>
+          <script>
+            BX24.init(function() {
+              BX24.installFinish();
+            });
+          </script>
         </body>
       </html>
     `);
