@@ -251,6 +251,22 @@ export async function bindBitrixLeadEvents() {
   return { ok: true, events, handler };
 }
 
+export async function bindBitrixDealPaymentWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-payment`;
+  const placement = "CRM_DEAL_DETAIL_ACTIVITY";
+
+  await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  });
+
+  return callBitrixMethod("placement.bind", {
+    PLACEMENT: placement,
+    HANDLER: handler,
+    TITLE: "Send Payment Link"
+  });
+}
+
 export async function getBitrixLeadById(leadId: string) {
   return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.lead.get", {
     id: leadId

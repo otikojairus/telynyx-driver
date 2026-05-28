@@ -358,10 +358,18 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 
 ### `POST /bitrix/connector/register`
 
-- Purpose: Re-register connector and rebind Bitrix connector/deal/lead webhook events.
+- Purpose: Re-register connector and rebind Bitrix connector/deal/lead webhook events, including Deal payment-link widget placement.
 - Auth: None.
 - Request body: None.
 - Response: `{ ok, register, activate, eventBind, dealEventBind, leadEventBind, status }`.
+
+### `ALL /bitrix/widgets/deal-payment`
+
+- Purpose: Bitrix widget handler page (Deal timeline button) with `Send Deposit Link` and `Send Callout Link` actions.
+- Auth: Bitrix placement context.
+- Notes:
+  - Reads `dealId` from Bitrix `PLACEMENT_OPTIONS`.
+  - Calls `/webhooks/inbound/bitrix/deals/payment-links` on button click.
 
 ### `POST /bitrix/leads/register`
 

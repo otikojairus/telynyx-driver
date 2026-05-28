@@ -9,6 +9,7 @@ import {
   bindBitrixDealEvents,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
+  bindBitrixDealPaymentWidget,
   findBitrixUserByEmail,
   getBitrixContactById,
   listBitrixDealCategories,
@@ -588,6 +589,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const eventBind = await bindBitrixConnectorEvents();
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
+    const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const status = await getBitrixConnectorStatus();
 
     return res.status(200).send(`
@@ -595,7 +597,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, status }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status }, null, 2)}</pre>
         </body>
       </html>
     `);
@@ -623,12 +625,106 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const eventBind = await bindBitrixConnectorEvents();
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
+    const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const status = await getBitrixConnectorStatus();
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, status });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
   }
+});
+
+app.all("/bitrix/widgets/deal-payment", async (req: Request, res: Response) => {
+  const placementOptionsRaw =
+    String((req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS ?? "{}");
+
+  let dealId = "";
+  try {
+    const parsed = JSON.parse(placementOptionsRaw) as Record<string, unknown>;
+    dealId = String(parsed.ID ?? "").trim();
+  } catch {
+    dealId = "";
+  }
+
+  const inboundSecret = config.inboundDealWebhookSecret;
+  const html = `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Send Payment Link</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; margin: 16px; color: #222; }
+          .wrap { max-width: 480px; }
+          .row { margin-bottom: 10px; }
+          .btn { border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; margin-right: 8px; }
+          .deposit { background: #0b66ff; color: white; }
+          .callout { background: #14532d; color: white; }
+          .hint { color: #666; font-size: 12px; }
+          .out { margin-top: 12px; font-size: 13px; white-space: pre-wrap; background: #f5f7fa; padding: 10px; border-radius: 8px; }
+          .error { color: #b91c1c; }
+        </style>
+      </head>
+      <body>
+        <div class="wrap">
+          <div class="row"><strong>Deal ID:</strong> <span id="dealId">${dealId || "Not found"}</span></div>
+          <div class="row">
+            <button class="btn deposit" id="sendDeposit">Send Deposit Link</button>
+            <button class="btn callout" id="sendCallout">Send Callout Link</button>
+          </div>
+          <div class="hint">This sends payment link via SMS and email using the current Deal context.</div>
+          <div class="out" id="out">Ready.</div>
+        </div>
+        <script>
+          const dealId = ${JSON.stringify(dealId)};
+          const out = document.getElementById("out");
+
+          async function sendPayment(paymentType) {
+            if (!dealId) {
+              out.innerHTML = '<span class="error">Missing deal ID from placement context.</span>';
+              return;
+            }
+
+            out.textContent = "Sending...";
+            try {
+              const response = await fetch("/webhooks/inbound/bitrix/deals/payment-links", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-inbound-secret": ${JSON.stringify(inboundSecret)}
+                },
+                body: JSON.stringify({
+                  dealId,
+                  paymentType
+                })
+              });
+
+              const json = await response.json();
+              if (!response.ok) {
+                out.innerHTML = '<span class="error">' + (json.error || "Request failed") + '</span>';
+                return;
+              }
+
+              out.textContent = JSON.stringify({
+                ok: json.ok,
+                paymentType: json.paymentType,
+                link: json.link,
+                sms: json.sms,
+                email: json.email
+              }, null, 2);
+            } catch (error) {
+              out.innerHTML = '<span class="error">' + (error?.message || "Unexpected error") + '</span>';
+            }
+          }
+
+          document.getElementById("sendDeposit").addEventListener("click", () => sendPayment("deposit"));
+          document.getElementById("sendCallout").addEventListener("click", () => sendPayment("callout"));
+        </script>
+      </body>
+    </html>
+  `;
+
+  return res.status(200).send(html);
 });
 
 app.post("/bitrix/deals/register", async (_req: Request, res: Response) => {
