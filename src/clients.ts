@@ -253,18 +253,36 @@ export async function bindBitrixLeadEvents() {
 
 export async function bindBitrixDealPaymentWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-payment`;
-  const placement = "CRM_DEAL_DETAIL_ACTIVITY";
+  const placements = ["CRM_DEAL_DETAIL_ACTIVITY", "CRM_DEAL_DETAIL_TAB"];
+  const results: Array<{ placement: string; unbind?: unknown; bind?: unknown; error?: string }> = [];
 
-  await callBitrixMethod("placement.unbind", {
-    PLACEMENT: placement,
-    HANDLER: handler
-  });
+  for (const placement of placements) {
+    try {
+      const unbind = await callBitrixMethod("placement.unbind", {
+        PLACEMENT: placement,
+        HANDLER: handler
+      });
 
-  return callBitrixMethod("placement.bind", {
-    PLACEMENT: placement,
-    HANDLER: handler,
-    TITLE: "Send Payment Link"
-  });
+      const bind = await callBitrixMethod("placement.bind", {
+        PLACEMENT: placement,
+        HANDLER: handler,
+        TITLE: "Send Payment Link"
+      });
+
+      results.push({ placement, unbind, bind });
+    } catch (error) {
+      results.push({
+        placement,
+        error: error instanceof Error ? error.message : "Placement bind failed"
+      });
+    }
+  }
+
+  return {
+    ok: results.some((item) => Boolean(item.bind)),
+    handler,
+    results
+  };
 }
 
 export async function getBitrixLeadById(leadId: string) {

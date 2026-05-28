@@ -370,6 +370,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - Notes:
   - Reads `dealId` from Bitrix `PLACEMENT_OPTIONS`.
   - Calls `/webhooks/inbound/bitrix/deals/payment-links` on button click.
+  - Registered on Deal placements `CRM_DEAL_DETAIL_ACTIVITY` and `CRM_DEAL_DETAIL_TAB` for better visibility across Bitrix UIs.
 
 ### `POST /bitrix/leads/register`
 
