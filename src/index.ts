@@ -10,6 +10,7 @@ import {
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
+  markBitrixAppInstalled,
   findBitrixUserByEmail,
   getBitrixContactById,
   listBitrixDealCategories,
@@ -591,6 +592,12 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const status = await getBitrixConnectorStatus();
+    let appInstall: unknown;
+    try {
+      appInstall = await markBitrixAppInstalled();
+    } catch (e) {
+      appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
+    }
 
     return res.status(200).send(`
       <html>
@@ -600,7 +607,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();

@@ -285,6 +285,10 @@ export async function bindBitrixDealPaymentWidget() {
   };
 }
 
+export async function markBitrixAppInstalled() {
+  return callBitrixMethod("app.install", {});
+}
+
 export async function getBitrixLeadById(leadId: string) {
   return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.lead.get", {
     id: leadId
