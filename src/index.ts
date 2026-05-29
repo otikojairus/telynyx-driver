@@ -1554,14 +1554,26 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
         if (bitrixCallId) {
           binding = { bitrixCallId, startedAt: Date.now(), finished: false };
           bitrixExternalCallByTelnyxId.set(externalCallId, binding);
-          if (userId) {
-            await showBitrixExternalCall({ callId: bitrixCallId, userId });
+          let shown = false;
+          let showResult: unknown;
+          let showError: string | undefined;
+
+          try {
+            const showResponse = await showBitrixExternalCall({ callId: bitrixCallId, userId });
+            shown = showResponse.result === true;
+            showResult = showResponse.result;
+          } catch (error) {
+            showError = error instanceof Error ? error.message : "Unknown error";
           }
+
           console.log("Registered Bitrix external call", {
             externalCallId,
             bitrixCallId,
             direction: isIncoming ? "incoming" : "outgoing",
-            state
+            state,
+            shown,
+            showResult,
+            showError
           });
         } else {
           console.error("Bitrix external call register returned no CALL_ID", {

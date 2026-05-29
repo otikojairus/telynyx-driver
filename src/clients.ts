@@ -341,7 +341,7 @@ export async function registerBitrixExternalCall(params: {
 }
 
 export async function showBitrixExternalCall(params: { callId: string; userId?: number }) {
-  return callBitrixMethod("telephony.externalCall.show", {
+  return callBitrixMethod<{ result?: unknown }>("telephony.externalCall.show", {
     CALL_ID: params.callId,
     USER_ID: params.userId
   });
