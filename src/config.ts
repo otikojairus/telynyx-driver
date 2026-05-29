@@ -10,13 +10,6 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function readNumberListEnv(name: string): number[] {
-  return String(process.env[name] ?? "")
-    .split(",")
-    .map((item) => Number(item.trim()))
-    .filter((item) => Number.isInteger(item) && item > 0);
-}
-
 export const config = {
   port: Number(process.env.PORT ?? 3000),
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`,
@@ -26,11 +19,6 @@ export const config = {
   bitrixConnectorId: requireEnv("BITRIX_CONNECTOR_ID"),
   bitrixConnectorName: process.env.BITRIX_CONNECTOR_NAME ?? "Telnyx SMS",
   bitrixLineId: requireEnv("BITRIX_LINE_ID"),
-  bitrixTelephonyUserId: Number(process.env.BITRIX_TELEPHONY_USER_ID ?? 0),
-  bitrixTelephonyShowUserIds: readNumberListEnv("BITRIX_TELEPHONY_SHOW_USER_IDS"),
-  bitrixTelephonyUserPhoneInner: process.env.BITRIX_TELEPHONY_USER_PHONE_INNER ?? "",
-  bitrixTelephonyLineNumber: process.env.BITRIX_TELEPHONY_LINE_NUMBER ?? "",
-  bitrixTelephonyFinishDelayMs: Number(process.env.BITRIX_TELEPHONY_FINISH_DELAY_MS ?? 0),
   bitrixOutboundSecret: process.env.BITRIX_OUTBOUND_SECRET ?? "",
   thirdPartyWebhookSecret: process.env.THIRD_PARTY_WEBHOOK_SECRET ?? "",
   inboundDealWebhookSecret: process.env.INBOUND_DEAL_WEBHOOK_SECRET ?? "",

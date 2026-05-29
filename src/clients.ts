@@ -192,41 +192,6 @@ export async function getBitrixConnectorStatus() {
   });
 }
 
-export async function listBitrixExternalLines() {
-  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("telephony.externalLine.get", {});
-}
-
-export async function addBitrixExternalLine(params: { number: string; name: string; crmAutoCreate?: "Y" | "N" }) {
-  return callBitrixMethod<{ result?: { ID?: number } }>("telephony.externalLine.add", {
-    NUMBER: params.number,
-    NAME: params.name,
-    CRM_AUTO_CREATE: params.crmAutoCreate ?? "Y"
-  });
-}
-
-export async function ensureBitrixExternalLine() {
-  const number = config.bitrixTelephonyLineNumber || config.telnyxFromNumber;
-  const name = config.bitrixConnectorName || "Telnyx";
-  const linesResponse = await listBitrixExternalLines();
-  const existing = (linesResponse.result ?? []).find((line) => String(line.NUMBER ?? "") === number);
-
-  if (existing) {
-    return { ok: true, number, existing, created: false };
-  }
-
-  try {
-    const add = await addBitrixExternalLine({ number, name, crmAutoCreate: "Y" });
-    return { ok: true, number, add, created: true };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "External line registration failed";
-    if (!message.includes("Line already exists")) {
-      throw error;
-    }
-
-    return { ok: true, number, created: false, warning: message };
-  }
-}
-
 export async function answerBitrixOpenLineChat(chatId: string | number) {
   return callBitrixMethod("imopenlines.operator.answer", {
     CHAT_ID: Number(chatId)
@@ -320,7 +285,7 @@ export async function bindBitrixDealPaymentWidget() {
   };
 }
 
-export async function bindBitrixCallCardWidget() {
+export async function unbindBitrixCallCardWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/call-card`;
   const placement = "CALL_CARD";
 
@@ -329,74 +294,16 @@ export async function bindBitrixCallCardWidget() {
     HANDLER: handler
   });
 
-  const bind = await callBitrixMethod("placement.bind", {
-    PLACEMENT: placement,
-    HANDLER: handler,
-    TITLE: "CSR Intake Form",
-    DESCRIPTION: "Pre-populates CRM info and writes intake notes to deal."
-  });
-
   return {
     ok: true,
     placement,
     handler,
-    unbind,
-    bind
+    unbind
   };
 }
 
 export async function markBitrixAppInstalled() {
   return callBitrixMethod("app.install", {});
-}
-
-export async function registerBitrixExternalCall(params: {
-  phoneNumber: string;
-  type: 1 | 2 | 3 | 4 | 5;
-  userId?: number;
-  userPhoneInner?: string;
-  lineNumber?: string;
-  externalCallId?: string;
-  crmEntityType?: "CONTACT" | "COMPANY" | "LEAD";
-  crmEntityId?: number;
-  show?: 0 | 1;
-  callStartDate?: string;
-}) {
-  return callBitrixMethod<{ result?: { CALL_ID?: string } }>("telephony.externalCall.register", {
-    PHONE_NUMBER: params.phoneNumber,
-    TYPE: params.type,
-    USER_ID: params.userId,
-    USER_PHONE_INNER: params.userPhoneInner,
-    LINE_NUMBER: params.lineNumber,
-    EXTERNAL_CALL_ID: params.externalCallId,
-    CRM_ENTITY_TYPE: params.crmEntityType,
-    CRM_ENTITY_ID: params.crmEntityId,
-    SHOW: params.show ?? 1,
-    CALL_START_DATE: params.callStartDate
-  });
-}
-
-export async function showBitrixExternalCall(params: { callId: string; userId?: number | number[] }) {
-  return callBitrixMethod<{ result?: unknown }>("telephony.externalCall.show", {
-    CALL_ID: params.callId,
-    USER_ID: params.userId
-  });
-}
-
-export async function finishBitrixExternalCall(params: {
-  callId: string;
-  userId?: number;
-  userPhoneInner?: string;
-  duration?: number;
-  statusCode?: string;
-}) {
-  return callBitrixMethod("telephony.externalCall.finish", {
-    CALL_ID: params.callId,
-    USER_ID: params.userId,
-    USER_PHONE_INNER: params.userPhoneInner,
-    DURATION: params.duration ?? 0,
-    STATUS_CODE: params.statusCode ?? (params.duration && params.duration > 0 ? "200" : "304"),
-    ADD_TO_CHAT: 1
-  });
 }
 
 export async function getBitrixLeadById(leadId: string) {

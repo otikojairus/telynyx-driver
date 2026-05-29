@@ -7,14 +7,11 @@ import {
   activateBitrixConnector,
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
-  bindBitrixCallCardWidget,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
-  ensureBitrixExternalLine,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
-  finishBitrixExternalCall,
   getBitrixContactById,
   listBitrixDealCategories,
   listBitrixDealFields,
@@ -25,12 +22,11 @@ import {
   getBitrixConnectorStatus,
   normalizeSmsParticipantId,
   registerBitrixConnector,
-  registerBitrixExternalCall,
   sendBitrixInternalMessage,
   sendBitrixDeliveryStatus,
-  showBitrixExternalCall,
   sendSmsThroughTelnyx,
   sendToBitrixOpenChannel,
+  unbindBitrixCallCardWidget,
   updateBitrixDealFields,
   updateBitrixDealStage
 } from "./clients";
@@ -85,19 +81,6 @@ const recentBitrixDealEvents: Array<{
   classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid";
   body: BitrixDealEvent;
 }> = [];
-const bitrixExternalCallByTelnyxId = new Map<
-  string,
-  {
-    bitrixCallId: string;
-    startedAt: number;
-    finished: boolean;
-    hangupScheduled: boolean;
-    registeredUserId?: number;
-    registeredUserPhoneInner?: string;
-    hangupDuration: number;
-  }
->();
-const telnyxIdByBitrixCallId = new Map<string, string>();
 
 function isDuplicate(set: Set<string>, key: string): boolean {
   if (set.has(key)) {
@@ -288,10 +271,6 @@ function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventCha
 function isTruthyCallState(state: string, matches: string[]) {
   const normalized = state.trim().toLowerCase();
   return matches.some((item) => normalized === item);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>): TelnyxWebhookRecord {
@@ -817,8 +796,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
-    const callCardWidgetBind = await bindBitrixCallCardWidget();
-    const externalLine = await ensureBitrixExternalLine();
+    const callCardWidgetUnbind = await unbindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -835,7 +813,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, externalLine, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetUnbind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -869,8 +847,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
-    const callCardWidgetBind = await bindBitrixCallCardWidget();
-    const externalLine = await ensureBitrixExternalLine();
+    const callCardWidgetUnbind = await unbindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -878,7 +855,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, externalLine, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetUnbind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -978,309 +955,27 @@ app.all("/bitrix/widgets/deal-payment", async (req: Request, res: Response) => {
   return res.status(200).send(html);
 });
 
-app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
-  const body = req.body as Record<string, unknown>;
-  const placement = parsePlacementOptions(body);
+app.all("/bitrix/widgets/call-card", (_req: Request, res: Response) => {
+  return res.status(410).send("Custom Bitrix call-card widget is disabled.");
+});
 
-  const phoneNumber = String(placement.PHONE_NUMBER ?? "");
-  const entityType = String(placement.CRM_ENTITY_TYPE ?? "").toUpperCase();
-  const entityId = normalizeBitrixEntityId(placement.CRM_ENTITY_ID);
-  const callId = String(placement.CALL_ID ?? "");
-
-  console.log("CALL_CARD widget request", {
-    phoneNumber,
-    entityType,
-    entityId,
-    callId
-  });
-
-  let existingTitle = "";
-  let existingComments = "";
-
+async function disableBitrixCallCardWidget(_req: Request, res: Response) {
   try {
-    if (entityId && entityType === "DEAL") {
-      const deal = await getBitrixDealById(entityId);
-      const record = deal?.result ?? {};
-      existingTitle = String(record.TITLE ?? "");
-      existingComments = String(record.COMMENTS ?? "");
-    } else if (entityId && entityType === "CONTACT") {
-      const contact = await getBitrixContactById(entityId);
-      const record = contact?.result ?? {};
-      const firstName = String(record.NAME ?? "");
-      const lastName = String(record.LAST_NAME ?? "");
-      existingTitle = `${firstName} ${lastName}`.trim();
-      existingComments = String(record.COMMENTS ?? "");
-    }
-  } catch (error) {
-    console.error("Failed to pre-populate CALL_CARD widget", {
-      entityType,
-      entityId,
-      error: error instanceof Error ? error.message : "Unknown error"
+    const callCardWidgetUnbind = await unbindBitrixCallCardWidget();
+    return res.status(200).json({
+      ok: true,
+      disabled: true,
+      message: "Custom CALL_CARD widget is disabled so Bitrix can use its default call popup.",
+      callCardWidgetUnbind
     });
-  }
-
-  const html = `
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>CSR Intake Form</title>
-        <script src="//api.bitrix24.com/api/v1/"></script>
-        <style>
-          body { margin: 0; padding: 12px; font-family: Arial, sans-serif; background: #f6f8fb; color: #1c232b; font-size: 13px; }
-          .card { background: #fff; border: 1px solid #dce3ea; border-radius: 8px; padding: 12px; }
-          h3 { margin: 0 0 10px; color: #0aa2e8; font-size: 16px; }
-          .meta { background: #eef4f8; border-radius: 6px; padding: 8px; margin-bottom: 12px; color: #5f6e7a; line-height: 1.4; }
-          .group { margin-bottom: 10px; }
-          label { display: block; margin-bottom: 4px; color: #5f6e7a; font-weight: 600; }
-          input[type="text"], textarea, select { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #dce3ea; border-radius: 6px; font-size: 13px; background: #fff; }
-          textarea { min-height: 90px; resize: vertical; }
-          button { width: 100%; border: 0; border-radius: 6px; padding: 10px; color: #fff; font-weight: 700; background: #85bc22; cursor: pointer; }
-          button:disabled { opacity: 0.7; cursor: not-allowed; }
-          #status { margin-top: 10px; font-weight: 700; text-align: center; min-height: 16px; }
-          .ok { color: #1f7a31; }
-          .err { color: #b42121; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h3>CSR Intake Form</h3>
-          <div class="meta">
-            <div><strong>Caller:</strong> <span id="metaCaller">${phoneNumber.replace(/</g, "&lt;")}</span></div>
-            <div><strong>Entity:</strong> <span id="metaEntity">${entityType.replace(/</g, "&lt;")} #${entityId.replace(/</g, "&lt;")}</span></div>
-            <div><strong>Call ID:</strong> <span id="metaCallId">${callId.replace(/</g, "&lt;")}</span></div>
-          </div>
-          <form id="intakeForm">
-            <input type="hidden" id="entityId" value="${entityId.replace(/"/g, "&quot;")}" />
-            <input type="hidden" id="entityType" value="${entityType.replace(/"/g, "&quot;")}" />
-            <input type="hidden" id="bitrixCallId" value="${callId.replace(/"/g, "&quot;")}" />
-            <textarea id="historicalComments" style="display:none;">${existingComments
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;")}</textarea>
-            <div class="group">
-              <label for="title">Deal Title</label>
-              <input id="title" type="text" value="${existingTitle
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")}" placeholder="Inbound call - follow-up required" />
-            </div>
-            <div class="group">
-              <label for="disposition">Disposition</label>
-              <select id="disposition">
-                <option value="In Progress">In Progress</option>
-                <option value="Interested">Interested</option>
-                <option value="Support Request">Support Request</option>
-                <option value="Not Interested">Not Interested</option>
-              </select>
-            </div>
-            <div class="group">
-              <label for="notes">Live Intake Notes</label>
-              <textarea id="notes" placeholder="Capture customer request, objections, timeline, and next action."></textarea>
-            </div>
-            <button id="saveBtn" type="submit">Update Deal</button>
-            <div id="status"></div>
-          </form>
-        </div>
-        <script>
-          (function() {
-            function setStatus(text, cssClass) {
-              var status = document.getElementById("status");
-              status.className = cssClass || "";
-              status.textContent = text;
-            }
-
-            function renderMeta(phone, type, id, callId) {
-              document.getElementById("metaCaller").textContent = phone || "";
-              document.getElementById("metaEntity").textContent = (type || "") + (id ? (" #" + id) : "");
-              document.getElementById("metaCallId").textContent = callId || "";
-            }
-
-            BX24.init(function() {
-              BX24.resizeWindow(document.body.clientWidth, document.body.clientHeight + 30);
-              BX24.placement.bindEvent("CallCard::EntityChanged", function() { window.location.reload(); });
-              BX24.placement.call("disableAutoClose", {}, function() {});
-
-              if (!document.getElementById("entityId").value) {
-                BX24.placement.call("getStatus", {}, function(result) {
-                  var data = null;
-                  try {
-                    data = typeof result.data === "function" ? result.data() : (result.answer || result);
-                  } catch (_e) {
-                    data = result;
-                  }
-
-                  var bindings = Array.isArray(data && data.CRM_BINDINGS) ? data.CRM_BINDINGS : [];
-                  var first = bindings.length > 0 ? bindings[0] : null;
-                  var resolvedType = first && (first.TYPE || first.ENTITY_TYPE_NAME || "") ? String(first.TYPE || first.ENTITY_TYPE_NAME).toUpperCase() : "";
-                  var resolvedIdRaw = first && (first.ID || first.ENTITY_ID || "") ? String(first.ID || first.ENTITY_ID) : "";
-                  var resolvedId = /^\\d+$/.test(resolvedIdRaw) && Number(resolvedIdRaw) > 0 ? resolvedIdRaw : "";
-                  var resolvedPhone = String((data && (data.PHONE_NUMBER || data.PHONE)) || "");
-                  var resolvedCallId = String((data && (data.CALL_ID || data.ID)) || "");
-
-                  if (resolvedId) {
-                    document.getElementById("entityId").value = resolvedId;
-                  }
-                  if (resolvedType) {
-                    document.getElementById("entityType").value = resolvedType;
-                  }
-                  var resolvedBitrixCallId = String((data && (data.CALL_ID || data.ID)) || "");
-                  if (resolvedBitrixCallId && !document.getElementById("bitrixCallId").value) {
-                    document.getElementById("bitrixCallId").value = resolvedBitrixCallId;
-                  }
-                  renderMeta(
-                    resolvedPhone || document.getElementById("metaCaller").textContent,
-                    resolvedType || document.getElementById("entityType").value,
-                    resolvedId || document.getElementById("entityId").value,
-                    resolvedCallId || document.getElementById("metaCallId").textContent
-                  );
-
-                  if (resolvedId && resolvedType === "DEAL") {
-                    BX24.callMethod("crm.deal.get", { id: Number(resolvedId) }, function(dealResult) {
-                      if (dealResult.error()) {
-                        return;
-                      }
-                      var deal = dealResult.data ? dealResult.data() : null;
-                      var dealObj = deal && deal.result ? deal.result : deal;
-                      if (dealObj) {
-                        if (!document.getElementById("title").value && dealObj.TITLE) {
-                          document.getElementById("title").value = String(dealObj.TITLE);
-                        }
-                        if (!document.getElementById("historicalComments").value && dealObj.COMMENTS) {
-                          document.getElementById("historicalComments").value = String(dealObj.COMMENTS);
-                        }
-                      }
-                    });
-                  }
-                });
-              }
-            });
-
-            document.getElementById("intakeForm").addEventListener("submit", function(event) {
-              event.preventDefault();
-
-              var saveBtn = document.getElementById("saveBtn");
-              var entityId = Number(document.getElementById("entityId").value || "0");
-              var entityType = document.getElementById("entityType").value;
-              var title = document.getElementById("title").value.trim();
-              var disposition = document.getElementById("disposition").value;
-              var notes = document.getElementById("notes").value.trim();
-              var previousComments = document.getElementById("historicalComments").value || "";
-
-              if (!entityId) {
-                setStatus("No CRM entity is linked to this call.", "err");
-                return;
-              }
-
-              if (entityType !== "DEAL") {
-                setStatus("This widget writes only to linked Deals.", "err");
-                return;
-              }
-
-              saveBtn.disabled = true;
-              saveBtn.textContent = "Saving...";
-              setStatus("", "");
-
-              var stamp = new Date().toLocaleString();
-              var patch = "[" + stamp + " | Inbound CSR Intake]";
-              patch += "\\nDisposition: " + disposition;
-              patch += "\\nNotes: " + (notes || "(none)");
-              var comments = previousComments ? (previousComments + "\\n\\n" + patch) : patch;
-
-              BX24.callMethod("crm.deal.update", {
-                id: entityId,
-                fields: {
-                  TITLE: title,
-                  COMMENTS: comments
-                }
-              }, function(result) {
-                saveBtn.disabled = false;
-                saveBtn.textContent = "Update Deal";
-
-                if (result.error()) {
-                  setStatus("Update failed: " + result.error_description(), "err");
-                  return;
-                }
-
-                setStatus("Deal updated successfully.", "ok");
-                document.getElementById("notes").value = "";
-                document.getElementById("historicalComments").value = comments;
-
-                var bitrixCallId = document.getElementById("bitrixCallId").value;
-                if (bitrixCallId) {
-                  fetch("/bitrix/call/finish", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ callId: bitrixCallId })
-                  }).catch(function() {});
-                }
-
-                BX24.placement.call("enableAutoClose", {}, function() {});
-              });
-            });
-          })();
-        </script>
-      </body>
-    </html>
-  `;
-
-  return res.status(200).send(html);
-});
-
-app.post("/bitrix/call/finish", async (req: Request, res: Response) => {
-  const { callId } = req.body as { callId?: string };
-  if (!callId) {
-    return res.status(400).json({ ok: false, error: "Missing callId" });
-  }
-
-  const telnyxId = telnyxIdByBitrixCallId.get(callId);
-  const binding = telnyxId ? bitrixExternalCallByTelnyxId.get(telnyxId) : undefined;
-
-  if (!binding) {
-    return res.status(404).json({ ok: false, error: "Call not found" });
-  }
-
-  if (binding.finished) {
-    return res.status(200).json({ ok: true, alreadyFinished: true });
-  }
-
-  try {
-    await finishBitrixExternalCall({
-      callId: binding.bitrixCallId,
-      userId: binding.registeredUserId,
-      userPhoneInner: binding.registeredUserPhoneInner,
-      duration: binding.hangupDuration,
-      statusCode: binding.hangupDuration > 0 ? "200" : "304"
-    });
-    binding.finished = true;
-    console.log("Finished Bitrix external call from widget", { bitrixCallId: binding.bitrixCallId });
-    return res.status(200).json({ ok: true });
   } catch (error) {
-    console.error("Failed to finish Bitrix external call from widget", error);
-    return res.status(500).json({ ok: false, error: "Finish failed" });
+    console.error("Failed to unbind Bitrix call card widget", error);
+    return res.status(500).json({ ok: false, error: "Bitrix CALL_CARD widget unbind failed" });
   }
-});
+}
 
-app.post("/bitrix/call-card/register", async (_req: Request, res: Response) => {
-  try {
-    const callCardWidgetBind = await bindBitrixCallCardWidget();
-    return res.status(200).json({ ok: true, callCardWidgetBind });
-  } catch (error) {
-    console.error("Failed to bind Bitrix call card widget", error);
-    return res.status(500).json({ ok: false, error: "Bitrix CALL_CARD widget binding failed" });
-  }
-});
-
-app.post("/bitrix/telephony/line/register", async (_req: Request, res: Response) => {
-  try {
-    const externalLine = await ensureBitrixExternalLine();
-    return res.status(200).json({ ok: true, externalLine });
-  } catch (error) {
-    console.error("Failed to register Bitrix external telephony line", error);
-    return res.status(500).json({ ok: false, error: "Bitrix external telephony line registration failed" });
-  }
-});
+app.post("/bitrix/call-card/register", disableBitrixCallCardWidget);
+app.post("/bitrix/call-card/unregister", disableBitrixCallCardWidget);
 
 app.post("/bitrix/deals/register", async (_req: Request, res: Response) => {
   try {
@@ -1575,158 +1270,6 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   }
 
   if (record.eventChannel === "call") {
-    const payload = body.data?.payload ?? {};
-    const externalCallId = String(
-      payload.call_control_id ?? payload.call_leg_id ?? payload.id ?? body.data?.id ?? ""
-    ).trim();
-    const from = normalizePhoneForSms(readTelnyxPhone(payload.from));
-    const to = normalizePhoneForSms(readTelnyxPhone(payload.to) || config.telnyxFromNumber);
-    const direction = String(payload.direction ?? "").trim().toLowerCase();
-    const state = String(payload.state ?? eventType).trim().toLowerCase();
-    const isIncoming = direction ? direction === "incoming" : true;
-    const userId = config.bitrixTelephonyUserId > 0 ? config.bitrixTelephonyUserId : undefined;
-    const showUserIds = config.bitrixTelephonyShowUserIds.length > 0 ? config.bitrixTelephonyShowUserIds : undefined;
-    const userPhoneInner = config.bitrixTelephonyUserPhoneInner || undefined;
-    const lineNumber = config.bitrixTelephonyLineNumber || config.telnyxFromNumber;
-
-    if (!externalCallId || (!from && !to)) {
-      record.status = "stored_call_event";
-      await persistTelnyxWebhookRecord(record);
-      return res.status(200).json({ ok: true, callEvent: true, skipped: "missing call identifiers" });
-    }
-
-    if (!userId && !userPhoneInner && !showUserIds?.length) {
-      console.warn("Skipping Bitrix telephony external call: configure BITRIX_TELEPHONY_USER_ID, BITRIX_TELEPHONY_USER_PHONE_INNER, or BITRIX_TELEPHONY_SHOW_USER_IDS");
-      record.status = "stored_call_event";
-      await persistTelnyxWebhookRecord(record);
-      return res.status(200).json({ ok: true, callEvent: true, skipped: "missing telephony user config" });
-    }
-
-    try {
-      let binding = bitrixExternalCallByTelnyxId.get(externalCallId);
-
-      const isTerminalState =
-        isTruthyCallState(state, ["call.hangup", "hangup", "ended", "completed", "destroy", "destroyed"]) ||
-        eventType === "call.hangup";
-
-      const shouldRegister =
-        !binding &&
-        !isTerminalState &&
-        (isTruthyCallState(state, ["call.initiated", "call.answered", "ringing", "answered", "bridged"]) ||
-          eventType.startsWith("call."));
-
-      if (shouldRegister) {
-        const registerUserId = userId ?? showUserIds?.[0];
-        const registerResponse = await registerBitrixExternalCall({
-          phoneNumber: isIncoming ? from || to : to || from,
-          type: isIncoming ? 2 : 1,
-          userId: registerUserId,
-          userPhoneInner,
-          lineNumber,
-          externalCallId,
-          show: 1
-        });
-
-        const bitrixCallId = String(registerResponse.result?.CALL_ID ?? "").trim();
-        if (bitrixCallId) {
-          binding = {
-            bitrixCallId,
-            startedAt: Date.now(),
-            finished: false,
-            hangupScheduled: false,
-            registeredUserId: registerUserId,
-            registeredUserPhoneInner: userPhoneInner,
-            hangupDuration: 0
-          };
-          bitrixExternalCallByTelnyxId.set(externalCallId, binding);
-          telnyxIdByBitrixCallId.set(bitrixCallId, externalCallId);
-
-          const usersToShow: number[] = showUserIds?.length
-            ? showUserIds
-            : userId ? [userId] : [];
-
-          const showResults: Array<{ userId: number; shown: boolean; error?: string }> = [];
-          for (const uid of usersToShow) {
-            try {
-              const showResponse = await showBitrixExternalCall({ callId: bitrixCallId, userId: uid });
-              showResults.push({ userId: uid, shown: showResponse.result === true });
-            } catch (error) {
-              showResults.push({ userId: uid, shown: false, error: error instanceof Error ? error.message : "Unknown error" });
-            }
-          }
-
-          console.log("Registered Bitrix external call", {
-            externalCallId,
-            bitrixCallId,
-            direction: isIncoming ? "incoming" : "outgoing",
-            state,
-            usersToShow,
-            showResults
-          });
-        } else {
-          console.error("Bitrix external call register returned no CALL_ID", {
-            externalCallId,
-            eventType,
-            state,
-            result: registerResponse.result
-          });
-        }
-      }
-
-      if (binding && !binding.finished && !binding.hangupScheduled && isTerminalState) {
-        const durationCandidate = Number(payload.duration ?? payload.duration_secs ?? payload.billsec ?? 0);
-        const duration = Number.isFinite(durationCandidate) && durationCandidate > 0 ? Math.floor(durationCandidate) : 0;
-        binding.hangupDuration = duration;
-        binding.hangupScheduled = true;
-
-        console.log("Call hangup received — popup kept open for agent", {
-          externalCallId,
-          eventType,
-          hangupCause: payload.hangup_cause,
-          hangupSource: payload.hangup_source,
-          duration,
-          bitrixCallId: binding.bitrixCallId
-        });
-
-        const safetyMs = Number.isFinite(config.bitrixTelephonyFinishDelayMs) && config.bitrixTelephonyFinishDelayMs > 0
-          ? config.bitrixTelephonyFinishDelayMs
-          : 10 * 60 * 1000;
-
-        const capturedBinding = binding;
-        setTimeout(async () => {
-          if (capturedBinding.finished) {
-            return;
-          }
-          try {
-            await finishBitrixExternalCall({
-              callId: capturedBinding.bitrixCallId,
-              userId: capturedBinding.registeredUserId,
-              userPhoneInner: capturedBinding.registeredUserPhoneInner,
-              duration: capturedBinding.hangupDuration,
-              statusCode: capturedBinding.hangupDuration > 0 ? "200" : "304"
-            });
-            capturedBinding.finished = true;
-            console.log("Auto-finished Bitrix external call after safety timeout", {
-              bitrixCallId: capturedBinding.bitrixCallId,
-              duration: capturedBinding.hangupDuration
-            });
-          } catch (error) {
-            console.error("Failed to auto-finish Bitrix external call", {
-              bitrixCallId: capturedBinding.bitrixCallId,
-              error: error instanceof Error ? error.message : "Unknown error"
-            });
-          }
-        }, safetyMs);
-      }
-    } catch (error) {
-      console.error("Failed handling Bitrix telephony external call bridge", {
-        externalCallId,
-        eventType,
-        state,
-        error: error instanceof Error ? error.message : "Unknown error"
-      });
-    }
-
     record.status = "stored_call_event";
     await persistTelnyxWebhookRecord(record);
 
