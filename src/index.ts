@@ -13,6 +13,7 @@ import {
   bindBitrixDealPaymentWidget,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
+  finishBitrixExternalCall,
   getBitrixContactById,
   listBitrixDealCategories,
   listBitrixDealFields,
@@ -23,8 +24,10 @@ import {
   getBitrixConnectorStatus,
   normalizeSmsParticipantId,
   registerBitrixConnector,
+  registerBitrixExternalCall,
   sendBitrixInternalMessage,
   sendBitrixDeliveryStatus,
+  showBitrixExternalCall,
   sendSmsThroughTelnyx,
   sendToBitrixOpenChannel,
   updateBitrixDealFields,
@@ -81,6 +84,10 @@ const recentBitrixDealEvents: Array<{
   classification: "deal_created" | "stage_changed" | "quote_approved" | "quote_declined" | "closed_won_paid";
   body: BitrixDealEvent;
 }> = [];
+const bitrixExternalCallByTelnyxId = new Map<
+  string,
+  { bitrixCallId: string; startedAt: number; finished: boolean }
+>();
 
 function isDuplicate(set: Set<string>, key: string): boolean {
   if (set.has(key)) {
@@ -266,6 +273,11 @@ function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventCha
   }
 
   return "other";
+}
+
+function isTruthyCallState(state: string, matches: string[]) {
+  const normalized = state.trim().toLowerCase();
+  return matches.some((item) => normalized === item);
 }
 
 function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>): TelnyxWebhookRecord {
@@ -1488,6 +1500,105 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   }
 
   if (record.eventChannel === "call") {
+    const payload = body.data?.payload ?? {};
+    const externalCallId = String(
+      payload.call_control_id ?? payload.call_leg_id ?? payload.id ?? body.data?.id ?? ""
+    ).trim();
+    const from = normalizePhoneForSms(readTelnyxPhone(payload.from));
+    const to = normalizePhoneForSms(readTelnyxPhone(payload.to) || config.telnyxFromNumber);
+    const direction = String(payload.direction ?? "").trim().toLowerCase();
+    const state = String(payload.state ?? eventType).trim().toLowerCase();
+    const isIncoming = direction ? direction === "incoming" : true;
+    const userId = config.bitrixTelephonyUserId > 0 ? config.bitrixTelephonyUserId : undefined;
+    const userPhoneInner = config.bitrixTelephonyUserPhoneInner || undefined;
+    const lineNumber = config.bitrixTelephonyLineNumber || config.telnyxFromNumber;
+
+    if (!externalCallId || (!from && !to)) {
+      record.status = "stored_call_event";
+      await persistTelnyxWebhookRecord(record);
+      return res.status(200).json({ ok: true, callEvent: true, skipped: "missing call identifiers" });
+    }
+
+    if (!userId && !userPhoneInner) {
+      console.warn("Skipping Bitrix telephony external call: configure BITRIX_TELEPHONY_USER_ID or BITRIX_TELEPHONY_USER_PHONE_INNER");
+      record.status = "stored_call_event";
+      await persistTelnyxWebhookRecord(record);
+      return res.status(200).json({ ok: true, callEvent: true, skipped: "missing telephony user config" });
+    }
+
+    try {
+      let binding = bitrixExternalCallByTelnyxId.get(externalCallId);
+
+      const isTerminalState =
+        isTruthyCallState(state, ["call.hangup", "hangup", "ended", "completed", "destroy", "destroyed"]) ||
+        eventType === "call.hangup";
+
+      const shouldRegister =
+        !binding &&
+        !isTerminalState &&
+        (isTruthyCallState(state, ["call.initiated", "call.answered", "ringing", "answered", "bridged"]) ||
+          eventType.startsWith("call."));
+
+      if (shouldRegister) {
+        const registerResponse = await registerBitrixExternalCall({
+          phoneNumber: isIncoming ? from || to : to || from,
+          type: isIncoming ? 2 : 1,
+          userId,
+          userPhoneInner,
+          lineNumber,
+          externalCallId,
+          show: 1
+        });
+
+        const bitrixCallId = String(registerResponse.result?.CALL_ID ?? "").trim();
+        if (bitrixCallId) {
+          binding = { bitrixCallId, startedAt: Date.now(), finished: false };
+          bitrixExternalCallByTelnyxId.set(externalCallId, binding);
+          if (userId) {
+            await showBitrixExternalCall({ callId: bitrixCallId, userId });
+          }
+          console.log("Registered Bitrix external call", {
+            externalCallId,
+            bitrixCallId,
+            direction: isIncoming ? "incoming" : "outgoing",
+            state
+          });
+        } else {
+          console.error("Bitrix external call register returned no CALL_ID", {
+            externalCallId,
+            eventType,
+            state,
+            result: registerResponse.result
+          });
+        }
+      }
+
+      if (binding && !binding.finished && isTerminalState) {
+        const durationCandidate = Number(payload.duration ?? payload.duration_secs ?? payload.billsec ?? 0);
+        const duration = Number.isFinite(durationCandidate) && durationCandidate > 0 ? Math.floor(durationCandidate) : 0;
+        await finishBitrixExternalCall({
+          callId: binding.bitrixCallId,
+          userId,
+          userPhoneInner,
+          duration,
+          statusCode: duration > 0 ? "200" : "304"
+        });
+        binding.finished = true;
+        console.log("Finished Bitrix external call", {
+          externalCallId,
+          bitrixCallId: binding.bitrixCallId,
+          duration
+        });
+      }
+    } catch (error) {
+      console.error("Failed handling Bitrix telephony external call bridge", {
+        externalCallId,
+        eventType,
+        state,
+        error: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+
     record.status = "stored_call_event";
     await persistTelnyxWebhookRecord(record);
 

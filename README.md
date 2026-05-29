@@ -58,6 +58,9 @@ BITRIX_CLIENT_SECRET=your_local_app_client_secret
 BITRIX_CONNECTOR_ID=telnyx_sms
 BITRIX_CONNECTOR_NAME=Telnyx SMS
 BITRIX_LINE_ID=2
+BITRIX_TELEPHONY_USER_ID=
+BITRIX_TELEPHONY_USER_PHONE_INNER=
+BITRIX_TELEPHONY_LINE_NUMBER=
 BITRIX_OUTBOUND_SECRET=
 THIRD_PARTY_WEBHOOK_SECRET=
 INBOUND_DEAL_WEBHOOK_SECRET=
@@ -83,6 +86,15 @@ WAVE_WEBHOOK_SECRET=
 ```
 
 `PUBLIC_BASE_URL` must be reachable by both Bitrix and Telnyx over HTTPS.
+
+For Bitrix `CALL_CARD` telephony widget behavior on inbound Telnyx call events, set at least one of:
+
+- `BITRIX_TELEPHONY_USER_ID`
+- `BITRIX_TELEPHONY_USER_PHONE_INNER`
+
+Optional:
+
+- `BITRIX_TELEPHONY_LINE_NUMBER` (recommended for correct line attribution in Bitrix reports)
 
 ## Run
 

@@ -314,6 +314,56 @@ export async function markBitrixAppInstalled() {
   return callBitrixMethod("app.install", {});
 }
 
+export async function registerBitrixExternalCall(params: {
+  phoneNumber: string;
+  type: 1 | 2 | 3 | 4 | 5;
+  userId?: number;
+  userPhoneInner?: string;
+  lineNumber?: string;
+  externalCallId?: string;
+  crmEntityType?: "CONTACT" | "COMPANY" | "LEAD";
+  crmEntityId?: number;
+  show?: 0 | 1;
+  callStartDate?: string;
+}) {
+  return callBitrixMethod<{ result?: { CALL_ID?: string } }>("telephony.externalCall.register", {
+    PHONE_NUMBER: params.phoneNumber,
+    TYPE: params.type,
+    USER_ID: params.userId,
+    USER_PHONE_INNER: params.userPhoneInner,
+    LINE_NUMBER: params.lineNumber,
+    EXTERNAL_CALL_ID: params.externalCallId,
+    CRM_ENTITY_TYPE: params.crmEntityType,
+    CRM_ENTITY_ID: params.crmEntityId,
+    SHOW: params.show ?? 1,
+    CALL_START_DATE: params.callStartDate
+  });
+}
+
+export async function showBitrixExternalCall(params: { callId: string; userId?: number }) {
+  return callBitrixMethod("telephony.externalCall.show", {
+    CALL_ID: params.callId,
+    USER_ID: params.userId
+  });
+}
+
+export async function finishBitrixExternalCall(params: {
+  callId: string;
+  userId?: number;
+  userPhoneInner?: string;
+  duration?: number;
+  statusCode?: string;
+}) {
+  return callBitrixMethod("telephony.externalCall.finish", {
+    CALL_ID: params.callId,
+    USER_ID: params.userId,
+    USER_PHONE_INNER: params.userPhoneInner,
+    DURATION: params.duration ?? 0,
+    STATUS_CODE: params.statusCode ?? (params.duration && params.duration > 0 ? "200" : "304"),
+    ADD_TO_CHAT: 1
+  });
+}
+
 export async function getBitrixLeadById(leadId: string) {
   return callBitrixMethod<{ result?: Record<string, unknown> }>("crm.lead.get", {
     id: leadId
