@@ -1558,10 +1558,11 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
           eventType.startsWith("call."));
 
       if (shouldRegister) {
+        const registerUserId = userId ?? showUserIds?.[0];
         const registerResponse = await registerBitrixExternalCall({
           phoneNumber: isIncoming ? from || to : to || from,
           type: isIncoming ? 2 : 1,
-          userId,
+          userId: registerUserId,
           userPhoneInner,
           lineNumber,
           externalCallId,
@@ -1631,7 +1632,7 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
         }
         await finishBitrixExternalCall({
           callId: binding.bitrixCallId,
-          userId,
+          userId: userId ?? showUserIds?.[0],
           userPhoneInner,
           duration,
           statusCode: duration > 0 ? "200" : "304"
