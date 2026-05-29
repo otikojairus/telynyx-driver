@@ -1581,8 +1581,10 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
           eventType,
           payloadState: payload.state,
           resolvedState: state,
-          duration,
-          payloadKeys: Object.keys(payload)
+          hangupCause: payload.hangup_cause,
+          hangupSource: payload.hangup_source,
+          sipHangupCause: payload.sip_hangup_cause,
+          duration
         });
         await finishBitrixExternalCall({
           callId: binding.bitrixCallId,
