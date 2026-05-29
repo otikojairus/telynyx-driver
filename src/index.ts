@@ -1537,8 +1537,8 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
       return res.status(200).json({ ok: true, callEvent: true, skipped: "missing call identifiers" });
     }
 
-    if (!userId && !userPhoneInner) {
-      console.warn("Skipping Bitrix telephony external call: configure BITRIX_TELEPHONY_USER_ID or BITRIX_TELEPHONY_USER_PHONE_INNER");
+    if (!userId && !userPhoneInner && !showUserIds?.length) {
+      console.warn("Skipping Bitrix telephony external call: configure BITRIX_TELEPHONY_USER_ID, BITRIX_TELEPHONY_USER_PHONE_INNER, or BITRIX_TELEPHONY_SHOW_USER_IDS");
       record.status = "stored_call_event";
       await persistTelnyxWebhookRecord(record);
       return res.status(200).json({ ok: true, callEvent: true, skipped: "missing telephony user config" });
@@ -1572,16 +1572,19 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
         if (bitrixCallId) {
           binding = { bitrixCallId, startedAt: Date.now(), finished: false };
           bitrixExternalCallByTelnyxId.set(externalCallId, binding);
-          let shown = false;
-          let showResult: unknown;
-          let showError: string | undefined;
 
-          try {
-            const showResponse = await showBitrixExternalCall({ callId: bitrixCallId, userId: showUserIds ?? userId });
-            shown = showResponse.result === true;
-            showResult = showResponse.result;
-          } catch (error) {
-            showError = error instanceof Error ? error.message : "Unknown error";
+          const usersToShow: number[] = showUserIds?.length
+            ? showUserIds
+            : userId ? [userId] : [];
+
+          const showResults: Array<{ userId: number; shown: boolean; error?: string }> = [];
+          for (const uid of usersToShow) {
+            try {
+              const showResponse = await showBitrixExternalCall({ callId: bitrixCallId, userId: uid });
+              showResults.push({ userId: uid, shown: showResponse.result === true });
+            } catch (error) {
+              showResults.push({ userId: uid, shown: false, error: error instanceof Error ? error.message : "Unknown error" });
+            }
           }
 
           console.log("Registered Bitrix external call", {
@@ -1589,13 +1592,8 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
             bitrixCallId,
             direction: isIncoming ? "incoming" : "outgoing",
             state,
-            registerUserId: userId,
-            registerUserPhoneInner: userPhoneInner,
-            lineNumber,
-            showUserIds: showUserIds ?? userId,
-            shown,
-            showResult,
-            showError
+            usersToShow,
+            showResults
           });
         } else {
           console.error("Bitrix external call register returned no CALL_ID", {
