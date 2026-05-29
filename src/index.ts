@@ -1510,6 +1510,7 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
     const state = String(payload.state ?? eventType).trim().toLowerCase();
     const isIncoming = direction ? direction === "incoming" : true;
     const userId = config.bitrixTelephonyUserId > 0 ? config.bitrixTelephonyUserId : undefined;
+    const showUserIds = config.bitrixTelephonyShowUserIds.length > 0 ? config.bitrixTelephonyShowUserIds : undefined;
     const userPhoneInner = config.bitrixTelephonyUserPhoneInner || undefined;
     const lineNumber = config.bitrixTelephonyLineNumber || config.telnyxFromNumber;
 
@@ -1559,7 +1560,7 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
           let showError: string | undefined;
 
           try {
-            const showResponse = await showBitrixExternalCall({ callId: bitrixCallId, userId });
+            const showResponse = await showBitrixExternalCall({ callId: bitrixCallId, userId: showUserIds ?? userId });
             shown = showResponse.result === true;
             showResult = showResponse.result;
           } catch (error) {
@@ -1571,6 +1572,10 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
             bitrixCallId,
             direction: isIncoming ? "incoming" : "outgoing",
             state,
+            registerUserId: userId,
+            registerUserPhoneInner: userPhoneInner,
+            lineNumber,
+            showUserIds: showUserIds ?? userId,
             shown,
             showResult,
             showError

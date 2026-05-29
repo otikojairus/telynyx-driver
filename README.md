@@ -94,6 +94,7 @@ For Bitrix `CALL_CARD` telephony widget behavior on inbound Telnyx call events, 
 
 Optional:
 
+- `BITRIX_TELEPHONY_SHOW_USER_IDS` (comma-separated Bitrix user IDs to force the call card screen-pop for specific logged-in operators)
 - `BITRIX_TELEPHONY_LINE_NUMBER` (recommended for correct line attribution in Bitrix reports)
 
 ## Run
