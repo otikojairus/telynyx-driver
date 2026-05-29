@@ -285,6 +285,31 @@ export async function bindBitrixDealPaymentWidget() {
   };
 }
 
+export async function bindBitrixCallCardWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/call-card`;
+  const placement = "CALL_CARD";
+
+  const unbind = await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  });
+
+  const bind = await callBitrixMethod("placement.bind", {
+    PLACEMENT: placement,
+    HANDLER: handler,
+    TITLE: "CSR Intake Form",
+    DESCRIPTION: "Pre-populates CRM info and writes intake notes to deal."
+  });
+
+  return {
+    ok: true,
+    placement,
+    handler,
+    unbind,
+    bind
+  };
+}
+
 export async function markBitrixAppInstalled() {
   return callBitrixMethod("app.install", {});
 }

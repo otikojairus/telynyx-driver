@@ -7,6 +7,7 @@ import {
   activateBitrixConnector,
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
+  bindBitrixCallCardWidget,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
@@ -217,6 +218,30 @@ function readTelnyxPhone(value: unknown): string {
   }
 
   return "";
+}
+
+function parsePlacementOptions(body: Record<string, unknown>): Record<string, unknown> {
+  const raw = body.PLACEMENT_OPTIONS;
+  if (!raw) {
+    return {};
+  }
+
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return {};
+    }
+  }
+
+  return {};
 }
 
 function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventChannel"] {
@@ -754,6 +779,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
+    const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -770,7 +796,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -804,6 +830,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
+    const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -811,7 +838,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -909,6 +936,188 @@ app.all("/bitrix/widgets/deal-payment", async (req: Request, res: Response) => {
   `;
 
   return res.status(200).send(html);
+});
+
+app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+  const placement = parsePlacementOptions(body);
+
+  const phoneNumber = String(placement.PHONE_NUMBER ?? "");
+  const entityType = String(placement.CRM_ENTITY_TYPE ?? "").toUpperCase();
+  const entityId = String(placement.CRM_ENTITY_ID ?? "");
+  const callId = String(placement.CALL_ID ?? "");
+
+  let existingTitle = "";
+  let existingComments = "";
+
+  try {
+    if (entityId && entityType === "DEAL") {
+      const deal = await getBitrixDealById(entityId);
+      const record = deal?.result ?? {};
+      existingTitle = String(record.TITLE ?? "");
+      existingComments = String(record.COMMENTS ?? "");
+    } else if (entityId && entityType === "CONTACT") {
+      const contact = await getBitrixContactById(entityId);
+      const record = contact?.result ?? {};
+      const firstName = String(record.NAME ?? "");
+      const lastName = String(record.LAST_NAME ?? "");
+      existingTitle = `${firstName} ${lastName}`.trim();
+      existingComments = String(record.COMMENTS ?? "");
+    }
+  } catch (error) {
+    console.error("Failed to pre-populate CALL_CARD widget", {
+      entityType,
+      entityId,
+      error: error instanceof Error ? error.message : "Unknown error"
+    });
+  }
+
+  const html = `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>CSR Intake Form</title>
+        <script src="//api.bitrix24.com/api/v1/"></script>
+        <style>
+          body { margin: 0; padding: 12px; font-family: Arial, sans-serif; background: #f6f8fb; color: #1c232b; font-size: 13px; }
+          .card { background: #fff; border: 1px solid #dce3ea; border-radius: 8px; padding: 12px; }
+          h3 { margin: 0 0 10px; color: #0aa2e8; font-size: 16px; }
+          .meta { background: #eef4f8; border-radius: 6px; padding: 8px; margin-bottom: 12px; color: #5f6e7a; line-height: 1.4; }
+          .group { margin-bottom: 10px; }
+          label { display: block; margin-bottom: 4px; color: #5f6e7a; font-weight: 600; }
+          input[type="text"], textarea, select { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #dce3ea; border-radius: 6px; font-size: 13px; background: #fff; }
+          textarea { min-height: 90px; resize: vertical; }
+          button { width: 100%; border: 0; border-radius: 6px; padding: 10px; color: #fff; font-weight: 700; background: #85bc22; cursor: pointer; }
+          button:disabled { opacity: 0.7; cursor: not-allowed; }
+          #status { margin-top: 10px; font-weight: 700; text-align: center; min-height: 16px; }
+          .ok { color: #1f7a31; }
+          .err { color: #b42121; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h3>CSR Intake Form</h3>
+          <div class="meta">
+            <div><strong>Caller:</strong> ${phoneNumber.replace(/</g, "&lt;")}</div>
+            <div><strong>Entity:</strong> ${entityType.replace(/</g, "&lt;")} #${entityId.replace(/</g, "&lt;")}</div>
+            <div><strong>Call ID:</strong> ${callId.replace(/</g, "&lt;")}</div>
+          </div>
+          <form id="intakeForm">
+            <input type="hidden" id="entityId" value="${entityId.replace(/"/g, "&quot;")}" />
+            <input type="hidden" id="entityType" value="${entityType.replace(/"/g, "&quot;")}" />
+            <textarea id="historicalComments" style="display:none;">${existingComments
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")}</textarea>
+            <div class="group">
+              <label for="title">Deal Title</label>
+              <input id="title" type="text" value="${existingTitle
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")}" placeholder="Inbound call - follow-up required" />
+            </div>
+            <div class="group">
+              <label for="disposition">Disposition</label>
+              <select id="disposition">
+                <option value="In Progress">In Progress</option>
+                <option value="Interested">Interested</option>
+                <option value="Support Request">Support Request</option>
+                <option value="Not Interested">Not Interested</option>
+              </select>
+            </div>
+            <div class="group">
+              <label for="notes">Live Intake Notes</label>
+              <textarea id="notes" placeholder="Capture customer request, objections, timeline, and next action."></textarea>
+            </div>
+            <button id="saveBtn" type="submit">Update Deal</button>
+            <div id="status"></div>
+          </form>
+        </div>
+        <script>
+          (function() {
+            function setStatus(text, cssClass) {
+              var status = document.getElementById("status");
+              status.className = cssClass || "";
+              status.textContent = text;
+            }
+
+            BX24.init(function() {
+              BX24.resizeWindow(document.body.clientWidth, document.body.clientHeight + 30);
+              BX24.placement.bindEvent("CallCard::EntityChanged", function() { window.location.reload(); });
+              BX24.placement.call("disableAutoClose", {}, function() {});
+            });
+
+            document.getElementById("intakeForm").addEventListener("submit", function(event) {
+              event.preventDefault();
+
+              var saveBtn = document.getElementById("saveBtn");
+              var entityId = Number(document.getElementById("entityId").value || "0");
+              var entityType = document.getElementById("entityType").value;
+              var title = document.getElementById("title").value.trim();
+              var disposition = document.getElementById("disposition").value;
+              var notes = document.getElementById("notes").value.trim();
+              var previousComments = document.getElementById("historicalComments").value || "";
+
+              if (!entityId) {
+                setStatus("No CRM entity is linked to this call.", "err");
+                return;
+              }
+
+              if (entityType !== "DEAL") {
+                setStatus("This widget writes only to linked Deals.", "err");
+                return;
+              }
+
+              saveBtn.disabled = true;
+              saveBtn.textContent = "Saving...";
+              setStatus("", "");
+
+              var stamp = new Date().toLocaleString();
+              var patch = "[" + stamp + " | Inbound CSR Intake]";
+              patch += "\\nDisposition: " + disposition;
+              patch += "\\nNotes: " + (notes || "(none)");
+              var comments = previousComments ? (previousComments + "\\n\\n" + patch) : patch;
+
+              BX24.callMethod("crm.deal.update", {
+                id: entityId,
+                fields: {
+                  TITLE: title,
+                  COMMENTS: comments
+                }
+              }, function(result) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = "Update Deal";
+
+                if (result.error()) {
+                  setStatus("Update failed: " + result.error_description(), "err");
+                  return;
+                }
+
+                setStatus("Deal updated successfully.", "ok");
+                document.getElementById("notes").value = "";
+                document.getElementById("historicalComments").value = comments;
+                BX24.placement.call("enableAutoClose", {}, function() {});
+              });
+            });
+          })();
+        </script>
+      </body>
+    </html>
+  `;
+
+  return res.status(200).send(html);
+});
+
+app.post("/bitrix/call-card/register", async (_req: Request, res: Response) => {
+  try {
+    const callCardWidgetBind = await bindBitrixCallCardWidget();
+    return res.status(200).json({ ok: true, callCardWidgetBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix call card widget", error);
+    return res.status(500).json({ ok: false, error: "Bitrix CALL_CARD widget binding failed" });
+  }
 });
 
 app.post("/bitrix/deals/register", async (_req: Request, res: Response) => {

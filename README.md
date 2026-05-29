@@ -13,6 +13,7 @@ Bitrix agent reply -> Middleware -> Telnyx -> Customer SMS
 
 - Local setup with Docker Compose and a public tunnel: [docs/local-setup.md](docs/local-setup.md)
 - DigitalOcean Droplet setup with Docker Compose, Nginx, and HTTPS: [docs/digitalocean-droplet.md](docs/digitalocean-droplet.md)
+- Bitrix24 CALL_CARD CSR intake widget setup: [docs/bitrix-call-card-widget.md](docs/bitrix-call-card-widget.md)
 
 ## Requirements
 
