@@ -1018,9 +1018,9 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
         <div class="card">
           <h3>CSR Intake Form</h3>
           <div class="meta">
-            <div><strong>Caller:</strong> ${phoneNumber.replace(/</g, "&lt;")}</div>
-            <div><strong>Entity:</strong> ${entityType.replace(/</g, "&lt;")} #${entityId.replace(/</g, "&lt;")}</div>
-            <div><strong>Call ID:</strong> ${callId.replace(/</g, "&lt;")}</div>
+            <div><strong>Caller:</strong> <span id="metaCaller">${phoneNumber.replace(/</g, "&lt;")}</span></div>
+            <div><strong>Entity:</strong> <span id="metaEntity">${entityType.replace(/</g, "&lt;")} #${entityId.replace(/</g, "&lt;")}</span></div>
+            <div><strong>Call ID:</strong> <span id="metaCallId">${callId.replace(/</g, "&lt;")}</span></div>
           </div>
           <form id="intakeForm">
             <input type="hidden" id="entityId" value="${entityId.replace(/"/g, "&quot;")}" />
@@ -1062,10 +1062,66 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
               status.textContent = text;
             }
 
+            function renderMeta(phone, type, id, callId) {
+              document.getElementById("metaCaller").textContent = phone || "";
+              document.getElementById("metaEntity").textContent = (type || "") + (id ? (" #" + id) : "");
+              document.getElementById("metaCallId").textContent = callId || "";
+            }
+
             BX24.init(function() {
               BX24.resizeWindow(document.body.clientWidth, document.body.clientHeight + 30);
               BX24.placement.bindEvent("CallCard::EntityChanged", function() { window.location.reload(); });
               BX24.placement.call("disableAutoClose", {}, function() {});
+
+              if (!document.getElementById("entityId").value) {
+                BX24.placement.call("getStatus", {}, function(result) {
+                  var data = null;
+                  try {
+                    data = typeof result.data === "function" ? result.data() : (result.answer || result);
+                  } catch (_e) {
+                    data = result;
+                  }
+
+                  var bindings = Array.isArray(data && data.CRM_BINDINGS) ? data.CRM_BINDINGS : [];
+                  var first = bindings.length > 0 ? bindings[0] : null;
+                  var resolvedType = first && (first.TYPE || first.ENTITY_TYPE_NAME || "") ? String(first.TYPE || first.ENTITY_TYPE_NAME).toUpperCase() : "";
+                  var resolvedIdRaw = first && (first.ID || first.ENTITY_ID || "") ? String(first.ID || first.ENTITY_ID) : "";
+                  var resolvedId = /^\\d+$/.test(resolvedIdRaw) && Number(resolvedIdRaw) > 0 ? resolvedIdRaw : "";
+                  var resolvedPhone = String((data && (data.PHONE_NUMBER || data.PHONE)) || "");
+                  var resolvedCallId = String((data && (data.CALL_ID || data.ID)) || "");
+
+                  if (resolvedId) {
+                    document.getElementById("entityId").value = resolvedId;
+                  }
+                  if (resolvedType) {
+                    document.getElementById("entityType").value = resolvedType;
+                  }
+                  renderMeta(
+                    resolvedPhone || document.getElementById("metaCaller").textContent,
+                    resolvedType || document.getElementById("entityType").value,
+                    resolvedId || document.getElementById("entityId").value,
+                    resolvedCallId || document.getElementById("metaCallId").textContent
+                  );
+
+                  if (resolvedId && resolvedType === "DEAL") {
+                    BX24.callMethod("crm.deal.get", { id: Number(resolvedId) }, function(dealResult) {
+                      if (dealResult.error()) {
+                        return;
+                      }
+                      var deal = dealResult.data ? dealResult.data() : null;
+                      var dealObj = deal && deal.result ? deal.result : deal;
+                      if (dealObj) {
+                        if (!document.getElementById("title").value && dealObj.TITLE) {
+                          document.getElementById("title").value = String(dealObj.TITLE);
+                        }
+                        if (!document.getElementById("historicalComments").value && dealObj.COMMENTS) {
+                          document.getElementById("historicalComments").value = String(dealObj.COMMENTS);
+                        }
+                      }
+                    });
+                  }
+                });
+              }
             });
 
             document.getElementById("intakeForm").addEventListener("submit", function(event) {
