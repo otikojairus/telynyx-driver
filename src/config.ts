@@ -30,6 +30,7 @@ export const config = {
   bitrixTelephonyShowUserIds: readNumberListEnv("BITRIX_TELEPHONY_SHOW_USER_IDS"),
   bitrixTelephonyUserPhoneInner: process.env.BITRIX_TELEPHONY_USER_PHONE_INNER ?? "",
   bitrixTelephonyLineNumber: process.env.BITRIX_TELEPHONY_LINE_NUMBER ?? "",
+  bitrixTelephonyFinishDelayMs: Number(process.env.BITRIX_TELEPHONY_FINISH_DELAY_MS ?? 0),
   bitrixOutboundSecret: process.env.BITRIX_OUTBOUND_SECRET ?? "",
   thirdPartyWebhookSecret: process.env.THIRD_PARTY_WEBHOOK_SECRET ?? "",
   inboundDealWebhookSecret: process.env.INBOUND_DEAL_WEBHOOK_SECRET ?? "",

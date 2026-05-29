@@ -11,6 +11,7 @@ import {
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
+  ensureBitrixExternalLine,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
   finishBitrixExternalCall,
@@ -278,6 +279,10 @@ function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventCha
 function isTruthyCallState(state: string, matches: string[]) {
   const normalized = state.trim().toLowerCase();
   return matches.some((item) => normalized === item);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>): TelnyxWebhookRecord {
@@ -804,6 +809,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
+    const externalLine = await ensureBitrixExternalLine();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -820,7 +826,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, externalLine, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -855,6 +861,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
+    const externalLine = await ensureBitrixExternalLine();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -862,7 +869,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, externalLine, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -1204,6 +1211,16 @@ app.post("/bitrix/call-card/register", async (_req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to bind Bitrix call card widget", error);
     return res.status(500).json({ ok: false, error: "Bitrix CALL_CARD widget binding failed" });
+  }
+});
+
+app.post("/bitrix/telephony/line/register", async (_req: Request, res: Response) => {
+  try {
+    const externalLine = await ensureBitrixExternalLine();
+    return res.status(200).json({ ok: true, externalLine });
+  } catch (error) {
+    console.error("Failed to register Bitrix external telephony line", error);
+    return res.status(500).json({ ok: false, error: "Bitrix external telephony line registration failed" });
   }
 });
 
@@ -1603,6 +1620,17 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
           sipHangupCause: payload.sip_hangup_cause,
           duration
         });
+        const finishDelayMs = Number.isFinite(config.bitrixTelephonyFinishDelayMs)
+          ? Math.max(0, Math.floor(config.bitrixTelephonyFinishDelayMs))
+          : 0;
+        if (finishDelayMs > 0) {
+          console.log("Delaying Bitrix external call finish", {
+            externalCallId,
+            bitrixCallId: binding.bitrixCallId,
+            finishDelayMs
+          });
+          await delay(finishDelayMs);
+        }
         await finishBitrixExternalCall({
           callId: binding.bitrixCallId,
           userId,

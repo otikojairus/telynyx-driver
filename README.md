@@ -96,6 +96,7 @@ Optional:
 
 - `BITRIX_TELEPHONY_SHOW_USER_IDS` (comma-separated Bitrix user IDs to force the call card screen-pop for specific logged-in operators)
 - `BITRIX_TELEPHONY_LINE_NUMBER` (recommended for correct line attribution in Bitrix reports)
+- `BITRIX_TELEPHONY_FINISH_DELAY_MS` (debug only; delays `externalCall.finish` so a very short call does not close the Bitrix card immediately)
 
 ## Run
 

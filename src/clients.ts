@@ -192,6 +192,41 @@ export async function getBitrixConnectorStatus() {
   });
 }
 
+export async function listBitrixExternalLines() {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("telephony.externalLine.get", {});
+}
+
+export async function addBitrixExternalLine(params: { number: string; name: string; crmAutoCreate?: "Y" | "N" }) {
+  return callBitrixMethod<{ result?: { ID?: number } }>("telephony.externalLine.add", {
+    NUMBER: params.number,
+    NAME: params.name,
+    CRM_AUTO_CREATE: params.crmAutoCreate ?? "Y"
+  });
+}
+
+export async function ensureBitrixExternalLine() {
+  const number = config.bitrixTelephonyLineNumber || config.telnyxFromNumber;
+  const name = config.bitrixConnectorName || "Telnyx";
+  const linesResponse = await listBitrixExternalLines();
+  const existing = (linesResponse.result ?? []).find((line) => String(line.NUMBER ?? "") === number);
+
+  if (existing) {
+    return { ok: true, number, existing, created: false };
+  }
+
+  try {
+    const add = await addBitrixExternalLine({ number, name, crmAutoCreate: "Y" });
+    return { ok: true, number, add, created: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "External line registration failed";
+    if (!message.includes("Line already exists")) {
+      throw error;
+    }
+
+    return { ok: true, number, created: false, warning: message };
+  }
+}
+
 export async function answerBitrixOpenLineChat(chatId: string | number) {
   return callBitrixMethod("imopenlines.operator.answer", {
     CHAT_ID: Number(chatId)
