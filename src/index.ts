@@ -87,8 +87,17 @@ const recentBitrixDealEvents: Array<{
 }> = [];
 const bitrixExternalCallByTelnyxId = new Map<
   string,
-  { bitrixCallId: string; startedAt: number; finished: boolean }
+  {
+    bitrixCallId: string;
+    startedAt: number;
+    finished: boolean;
+    hangupScheduled: boolean;
+    registeredUserId?: number;
+    registeredUserPhoneInner?: string;
+    hangupDuration: number;
+  }
 >();
+const telnyxIdByBitrixCallId = new Map<string, string>();
 
 function isDuplicate(set: Set<string>, key: string): boolean {
   if (set.has(key)) {
@@ -1044,6 +1053,7 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
           <form id="intakeForm">
             <input type="hidden" id="entityId" value="${entityId.replace(/"/g, "&quot;")}" />
             <input type="hidden" id="entityType" value="${entityType.replace(/"/g, "&quot;")}" />
+            <input type="hidden" id="bitrixCallId" value="${callId.replace(/"/g, "&quot;")}" />
             <textarea id="historicalComments" style="display:none;">${existingComments
               .replace(/&/g, "&amp;")
               .replace(/</g, "&lt;")
@@ -1114,6 +1124,10 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
                   }
                   if (resolvedType) {
                     document.getElementById("entityType").value = resolvedType;
+                  }
+                  var resolvedBitrixCallId = String((data && (data.CALL_ID || data.ID)) || "");
+                  if (resolvedBitrixCallId && !document.getElementById("bitrixCallId").value) {
+                    document.getElementById("bitrixCallId").value = resolvedBitrixCallId;
                   }
                   renderMeta(
                     resolvedPhone || document.getElementById("metaCaller").textContent,
@@ -1192,6 +1206,16 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
                 setStatus("Deal updated successfully.", "ok");
                 document.getElementById("notes").value = "";
                 document.getElementById("historicalComments").value = comments;
+
+                var bitrixCallId = document.getElementById("bitrixCallId").value;
+                if (bitrixCallId) {
+                  fetch("/bitrix/call/finish", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ callId: bitrixCallId })
+                  }).catch(function() {});
+                }
+
                 BX24.placement.call("enableAutoClose", {}, function() {});
               });
             });
@@ -1202,6 +1226,40 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
   `;
 
   return res.status(200).send(html);
+});
+
+app.post("/bitrix/call/finish", async (req: Request, res: Response) => {
+  const { callId } = req.body as { callId?: string };
+  if (!callId) {
+    return res.status(400).json({ ok: false, error: "Missing callId" });
+  }
+
+  const telnyxId = telnyxIdByBitrixCallId.get(callId);
+  const binding = telnyxId ? bitrixExternalCallByTelnyxId.get(telnyxId) : undefined;
+
+  if (!binding) {
+    return res.status(404).json({ ok: false, error: "Call not found" });
+  }
+
+  if (binding.finished) {
+    return res.status(200).json({ ok: true, alreadyFinished: true });
+  }
+
+  try {
+    await finishBitrixExternalCall({
+      callId: binding.bitrixCallId,
+      userId: binding.registeredUserId,
+      userPhoneInner: binding.registeredUserPhoneInner,
+      duration: binding.hangupDuration,
+      statusCode: binding.hangupDuration > 0 ? "200" : "304"
+    });
+    binding.finished = true;
+    console.log("Finished Bitrix external call from widget", { bitrixCallId: binding.bitrixCallId });
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("Failed to finish Bitrix external call from widget", error);
+    return res.status(500).json({ ok: false, error: "Finish failed" });
+  }
 });
 
 app.post("/bitrix/call-card/register", async (_req: Request, res: Response) => {
@@ -1571,8 +1629,17 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
 
         const bitrixCallId = String(registerResponse.result?.CALL_ID ?? "").trim();
         if (bitrixCallId) {
-          binding = { bitrixCallId, startedAt: Date.now(), finished: false };
+          binding = {
+            bitrixCallId,
+            startedAt: Date.now(),
+            finished: false,
+            hangupScheduled: false,
+            registeredUserId: registerUserId,
+            registeredUserPhoneInner: userPhoneInner,
+            hangupDuration: 0
+          };
           bitrixExternalCallByTelnyxId.set(externalCallId, binding);
+          telnyxIdByBitrixCallId.set(bitrixCallId, externalCallId);
 
           const usersToShow: number[] = showUserIds?.length
             ? showUserIds
@@ -1606,43 +1673,50 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
         }
       }
 
-      if (binding && !binding.finished && isTerminalState) {
+      if (binding && !binding.finished && !binding.hangupScheduled && isTerminalState) {
         const durationCandidate = Number(payload.duration ?? payload.duration_secs ?? payload.billsec ?? 0);
         const duration = Number.isFinite(durationCandidate) && durationCandidate > 0 ? Math.floor(durationCandidate) : 0;
-        console.log("Finishing Bitrix external call — terminal event received", {
+        binding.hangupDuration = duration;
+        binding.hangupScheduled = true;
+
+        console.log("Call hangup received — popup kept open for agent", {
           externalCallId,
           eventType,
-          payloadState: payload.state,
-          resolvedState: state,
           hangupCause: payload.hangup_cause,
           hangupSource: payload.hangup_source,
-          sipHangupCause: payload.sip_hangup_cause,
-          duration
-        });
-        const finishDelayMs = Number.isFinite(config.bitrixTelephonyFinishDelayMs)
-          ? Math.max(0, Math.floor(config.bitrixTelephonyFinishDelayMs))
-          : 0;
-        if (finishDelayMs > 0) {
-          console.log("Delaying Bitrix external call finish", {
-            externalCallId,
-            bitrixCallId: binding.bitrixCallId,
-            finishDelayMs
-          });
-          await delay(finishDelayMs);
-        }
-        await finishBitrixExternalCall({
-          callId: binding.bitrixCallId,
-          userId: userId ?? showUserIds?.[0],
-          userPhoneInner,
           duration,
-          statusCode: duration > 0 ? "200" : "304"
+          bitrixCallId: binding.bitrixCallId
         });
-        binding.finished = true;
-        console.log("Finished Bitrix external call", {
-          externalCallId,
-          bitrixCallId: binding.bitrixCallId,
-          duration
-        });
+
+        const safetyMs = Number.isFinite(config.bitrixTelephonyFinishDelayMs) && config.bitrixTelephonyFinishDelayMs > 0
+          ? config.bitrixTelephonyFinishDelayMs
+          : 10 * 60 * 1000;
+
+        const capturedBinding = binding;
+        setTimeout(async () => {
+          if (capturedBinding.finished) {
+            return;
+          }
+          try {
+            await finishBitrixExternalCall({
+              callId: capturedBinding.bitrixCallId,
+              userId: capturedBinding.registeredUserId,
+              userPhoneInner: capturedBinding.registeredUserPhoneInner,
+              duration: capturedBinding.hangupDuration,
+              statusCode: capturedBinding.hangupDuration > 0 ? "200" : "304"
+            });
+            capturedBinding.finished = true;
+            console.log("Auto-finished Bitrix external call after safety timeout", {
+              bitrixCallId: capturedBinding.bitrixCallId,
+              duration: capturedBinding.hangupDuration
+            });
+          } catch (error) {
+            console.error("Failed to auto-finish Bitrix external call", {
+              bitrixCallId: capturedBinding.bitrixCallId,
+              error: error instanceof Error ? error.message : "Unknown error"
+            });
+          }
+        }, safetyMs);
       }
     } catch (error) {
       console.error("Failed handling Bitrix telephony external call bridge", {
