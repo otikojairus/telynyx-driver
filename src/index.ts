@@ -1576,6 +1576,14 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
       if (binding && !binding.finished && isTerminalState) {
         const durationCandidate = Number(payload.duration ?? payload.duration_secs ?? payload.billsec ?? 0);
         const duration = Number.isFinite(durationCandidate) && durationCandidate > 0 ? Math.floor(durationCandidate) : 0;
+        console.log("Finishing Bitrix external call — terminal event received", {
+          externalCallId,
+          eventType,
+          payloadState: payload.state,
+          resolvedState: state,
+          duration,
+          payloadKeys: Object.keys(payload)
+        });
         await finishBitrixExternalCall({
           callId: binding.bitrixCallId,
           userId,
