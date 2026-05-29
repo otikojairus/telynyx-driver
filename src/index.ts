@@ -244,6 +244,18 @@ function parsePlacementOptions(body: Record<string, unknown>): Record<string, un
   return {};
 }
 
+function normalizeBitrixEntityId(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw || !/^\d+$/.test(raw)) {
+    return "";
+  }
+  const asNumber = Number(raw);
+  if (!Number.isInteger(asNumber) || asNumber <= 0) {
+    return "";
+  }
+  return String(asNumber);
+}
+
 function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventChannel"] {
   if (eventType === "message.received" || eventType.startsWith("message.")) {
     return "sms";
@@ -583,7 +595,7 @@ async function generateAndSendDealPaymentLink(params: {
 
   const dealResponse = await getBitrixDealById(dealId);
   const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
-  const contactId = String(deal.CONTACT_ID ?? "").trim();
+  const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
 
   if (!customerName || !customerPhone || !customerEmail) {
     if (contactId) {
@@ -944,8 +956,15 @@ app.all("/bitrix/widgets/call-card", async (req: Request, res: Response) => {
 
   const phoneNumber = String(placement.PHONE_NUMBER ?? "");
   const entityType = String(placement.CRM_ENTITY_TYPE ?? "").toUpperCase();
-  const entityId = String(placement.CRM_ENTITY_ID ?? "");
+  const entityId = normalizeBitrixEntityId(placement.CRM_ENTITY_ID);
   const callId = String(placement.CALL_ID ?? "");
+
+  console.log("CALL_CARD widget request", {
+    phoneNumber,
+    entityType,
+    entityId,
+    callId
+  });
 
   let existingTitle = "";
   let existingComments = "";
@@ -1767,7 +1786,7 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         stageId = String(deal.STAGE_ID ?? "").trim();
       }
       const contactIdRaw = deal.CONTACT_ID ?? fields.CONTACT_ID ?? "";
-      const contactId = String(contactIdRaw || "");
+      const contactId = normalizeBitrixEntityId(contactIdRaw);
       const serviceType = buildLeadServiceType(deal);
       const urgencyLevel = readFirstNonEmptyString(deal, [
         "UF_CRM_URGENCY_LEVEL",
