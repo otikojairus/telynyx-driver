@@ -57,6 +57,7 @@ const processedTelnyxEvents = new Set<string>();
 const processedBitrixMessageIds = new Set<string>();
 const processedQuotePresentedPaymentTriggers = new Set<string>();
 const processedDealCreateNotifications = new Set<string>();
+const processedBitrixDealStageEvents = new Map<string, number>();
 const phoneByChatId = new Map<string, string>();
 const phoneByUserId = new Map<string, string>();
 const thirdPartyReplyRouteByPhone = new Map<string, { webhookUrl: string; deliverSmsReplies: boolean }>();
@@ -160,6 +161,19 @@ function trimMap<T>(map: Map<string, T>, maxEntries = 5000): void {
   if (first) {
     map.delete(first);
   }
+}
+
+function isRecentDuplicateDealStageEvent(dealId: string, eventName: string, stageId: string): boolean {
+  const normalizedStageId = normalizeStageId(stageId);
+  const dedupeKey = `${eventName}:${dealId}:${normalizedStageId}`;
+  const now = Date.now();
+  const windowMs = 60_000;
+  const lastSeen = processedBitrixDealStageEvents.get(dedupeKey);
+
+  processedBitrixDealStageEvents.set(dedupeKey, now);
+  trimMap(processedBitrixDealStageEvents, 5000);
+
+  return typeof lastSeen === "number" && now - lastSeen < windowMs;
 }
 
 function buildChatId(phone: string): string {
@@ -1561,6 +1575,14 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
 
   if (!dealId) {
     return res.status(400).json({ ok: false, error: "Missing deal id" });
+  }
+
+  if (eventName === "ONCRMDEALUPDATE" && !String(stageIdRaw).trim()) {
+    return res.status(200).json({ ok: true, ignored: true, reason: "non-stage deal update" });
+  }
+
+  if (stageId && isRecentDuplicateDealStageEvent(dealId, eventName, stageId)) {
+    return res.status(200).json({ ok: true, duplicate: true, dealId, stageId });
   }
 
   try {
