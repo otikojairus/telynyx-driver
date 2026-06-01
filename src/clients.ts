@@ -302,6 +302,33 @@ export async function unbindBitrixCallCardWidget() {
   };
 }
 
+export async function bindBitrixCallCardWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/call-card`;
+  const placement = "CALL_CARD";
+
+  await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  }).catch(() => null);
+
+  const bind = await callBitrixMethod("placement.bind", {
+    PLACEMENT: placement,
+    HANDLER: handler,
+    TITLE: "CSR Intake"
+  });
+
+  return {
+    ok: true,
+    placement,
+    handler,
+    bind
+  };
+}
+
+export async function createBitrixDeal(fields: Record<string, unknown>) {
+  return callBitrixMethod<{ result?: number }>("crm.deal.add", { fields });
+}
+
 export async function markBitrixAppInstalled() {
   return callBitrixMethod("app.install", {});
 }
