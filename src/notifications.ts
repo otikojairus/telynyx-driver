@@ -16,6 +16,16 @@ export async function sendLeadConfirmationEmail(params: {
     params.message ??
     `Hi ${params.customerName}, this is PRG confirming your service request for ${params.serviceType}. A technician will be in touch shortly.`;
 
+  const cleanedMessage = message
+    .replace(
+      new RegExp(
+        `^Hi\\s+${params.customerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*,\\s*this is PRG\\.\\s*Update on your service request for\\s+${params.serviceType.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*we have received your service request\\.\\s*`,
+        "i"
+      ),
+      ""
+    )
+    .trim();
+
   const emailTemplate = `
     <!DOCTYPE html>
     <html lang="en">
@@ -31,7 +41,7 @@ export async function sendLeadConfirmationEmail(params: {
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:620px;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(20,54,91,0.12);">
                 <tr>
                   <td style="background:#14365B;padding:26px 28px;text-align:center;">
-                    <img src="https://proofresponse.com/wp-content/uploads/2026/01/ProofResponse-Logo-Transparent-BG.png" alt="ProofResponse Logo" style="max-width:220px;width:100%;height:auto;display:inline-block;" />
+                    <img src="https://proofresponse.com/wp-content/uploads/2026/01/ProofResponse-Logo.png" alt="ProofResponse Logo" style="max-width:220px;width:100%;height:auto;display:inline-block;" />
                   </td>
                 </tr>
                 <tr>
@@ -43,7 +53,7 @@ export async function sendLeadConfirmationEmail(params: {
                       <strong>${params.serviceType}</strong>, and your case is now in our active response queue.
                     </p>
                     <p style="margin:0 0 18px 0;font-size:16px;line-height:1.6;color:#14365B;">
-                      ${message} Our team is reviewing the details and will reach out shortly with the next
+                      ${cleanedMessage} Our team is reviewing the details and will reach out shortly with the next
                       steps, expected timeline, and any information we may need to speed up resolution.
                     </p>
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:12px 0 0 0;">
