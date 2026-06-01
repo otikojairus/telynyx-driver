@@ -663,8 +663,9 @@ async function generateAndSendDealPaymentLink(params: {
     paymentType === "deposit"
       ? `Hi ${customerName || "there"}, please pay your deposit here: ${wave.link}`
       : `Hi ${customerName || "there"}, please pay the callout fee here: ${wave.link}`;
+  const dealName = String(deal.TITLE ?? "").trim() || `Deal ${dealId}`;
   const emailBody =
-    `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link for Deal ${dealId}: ${wave.link}`;
+    `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link for ${dealName}: ${wave.link}`;
 
   const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
     attempted: Boolean(sendSms && customerPhone),
