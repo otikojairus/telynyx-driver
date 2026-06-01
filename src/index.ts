@@ -26,6 +26,8 @@ import {
   sendBitrixDeliveryStatus,
   sendSmsThroughTelnyx,
   sendToBitrixOpenChannel,
+  bindBitrixCallCardWidget,
+  createBitrixDeal,
   unbindBitrixCallCardWidget,
   updateBitrixDealFields,
   updateBitrixDealStage
@@ -797,7 +799,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
-    const callCardWidgetUnbind = await unbindBitrixCallCardWidget();
+    const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -814,7 +816,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetUnbind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -848,7 +850,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
-    const callCardWidgetUnbind = await unbindBitrixCallCardWidget();
+    const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
     try {
@@ -856,7 +858,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetUnbind, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -956,8 +958,315 @@ app.all("/bitrix/widgets/deal-payment", async (req: Request, res: Response) => {
   return res.status(200).send(html);
 });
 
-app.all("/bitrix/widgets/call-card", (_req: Request, res: Response) => {
-  return res.status(410).send("Custom Bitrix call-card widget is disabled.");
+app.all("/bitrix/widgets/call-card", (req: Request, res: Response) => {
+  const placementOptionsRaw = String(
+    (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS ?? "{}"
+  );
+
+  let phoneNumber = "";
+  let callId = "";
+  try {
+    const opts = JSON.parse(placementOptionsRaw) as Record<string, unknown>;
+    phoneNumber = String(opts.PHONE_NUMBER ?? "").trim();
+    callId = String(opts.CALL_ID ?? "").trim();
+  } catch {
+    // ignore parse errors
+  }
+
+  const inboundSecret = config.inboundDealWebhookSecret;
+
+  const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CSR First Call Intake</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px 14px 20px; font-size: 13px; color: #1a1a1a; background: #fff; }
+      h2 { font-size: 15px; margin: 0 0 14px; color: #111; }
+      h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #666; margin: 16px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+      h3:first-of-type { margin-top: 0; }
+      label { display: block; font-size: 12px; color: #444; margin-bottom: 3px; }
+      input[type="text"], input[type="tel"], textarea, select {
+        width: 100%; border: 1px solid #ccc; border-radius: 6px; padding: 6px 8px;
+        font-size: 13px; color: #111; background: #fafafa; outline: none;
+        transition: border-color .15s;
+      }
+      input:focus, textarea:focus, select:focus { border-color: #0b66ff; background: #fff; }
+      textarea { resize: vertical; min-height: 64px; }
+      .row { margin-bottom: 8px; }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .checks { display: flex; flex-wrap: wrap; gap: 6px; }
+      .checks label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #333; margin: 0; cursor: pointer; }
+      .checks input[type="checkbox"] { width: auto; }
+      .btn-submit {
+        margin-top: 16px; width: 100%; padding: 10px; border: 0; border-radius: 8px;
+        background: #0b66ff; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+      }
+      .btn-submit:disabled { background: #93b8ff; cursor: default; }
+      .out { margin-top: 10px; font-size: 12px; white-space: pre-wrap; background: #f5f7fa; padding: 10px; border-radius: 8px; display: none; }
+      .out.visible { display: block; }
+      .out.error { color: #b91c1c; background: #fff5f5; }
+      .out.success { color: #14532d; background: #f0fdf4; }
+    </style>
+  </head>
+  <body>
+    <h2>CSR First Call Intake</h2>
+    <form id="intakeForm" novalidate>
+
+      <h3>Customer Basics</h3>
+      <div class="row">
+        <label>Full Name *</label>
+        <input type="text" name="fullName" required placeholder="Jane Doe" />
+      </div>
+      <div class="grid2">
+        <div class="row">
+          <label>Phone Number *</label>
+          <input type="tel" name="phoneNumber" required value="${phoneNumber}" placeholder="4035551234" />
+        </div>
+        <div class="row">
+          <label>Customer Type *</label>
+          <select name="customerType" required>
+            <option value="Owner">Owner</option>
+            <option value="Tenant">Tenant</option>
+            <option value="Property Manager">Property Manager</option>
+            <option value="Strata/HOA">Strata/HOA</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <label>Service Address *</label>
+        <input type="text" name="serviceAddress" required placeholder="123 Main St" />
+      </div>
+      <div class="grid2">
+        <div class="row">
+          <label>City *</label>
+          <input type="text" name="city" required placeholder="Calgary" />
+        </div>
+        <div class="row">
+          <label>Province / State *</label>
+          <input type="text" name="provinceState" required placeholder="Alberta" />
+        </div>
+      </div>
+      <div class="row">
+        <label>Country *</label>
+        <input type="text" name="country" required value="Canada" placeholder="Canada" />
+      </div>
+
+      <h3>Service Request</h3>
+      <div class="row">
+        <label>Service Category *</label>
+        <div class="checks" id="categoryChecks">
+          ${["Plumbing","Electrical","HVAC","Appliances","Carpentry","Painting","Roofing","Flooring","Windows & Doors","General Maintenance"].map(c =>
+            `<label><input type="checkbox" name="serviceCategory" value="${c}" />${c}</label>`
+          ).join("")}
+        </div>
+      </div>
+      <div class="row">
+        <label>Service Types</label>
+        <div class="checks">
+          ${["Pipe Leak / Burst Pipe","Drain Clog","Water Heater","Toilet Issues","Faucet / Fixture","Outlet / Switch","Panel / Breaker","Light Fixture","Wiring Issues","Furnace / Boiler","Air Conditioning","Ventilation / Ducts","Thermostat","Appliance Repair","Roof Leak","General Repair","Other"].map(t =>
+            `<label><input type="checkbox" name="serviceTypes" value="${t}" />${t}</label>`
+          ).join("")}
+        </div>
+      </div>
+      <div class="row">
+        <label>Issue Description</label>
+        <textarea name="issueDescription" placeholder="Describe the issue..."></textarea>
+      </div>
+
+      <h3>Location of Issue</h3>
+      <div class="checks">
+        ${["Kitchen","Bathroom (Main)","Bathroom (En-Suite)","Basement","Living Room","Dining Room","Bedroom(s)","Laundry Room","Garage","Attic","Exterior / Yard","Other"].map(l =>
+          `<label><input type="checkbox" name="locationOfIssue" value="${l}" />${l}</label>`
+        ).join("")}
+      </div>
+
+      <h3>Urgency</h3>
+      <div class="row">
+        <select name="urgency" required>
+          <option value="Urgent (24-48 hrs)">Urgent (24-48 hrs)</option>
+          <option value="Non-Urgent (3-5 days)">Non-Urgent (3-5 days)</option>
+          <option value="Flexible">Flexible / Not Time-Sensitive</option>
+        </select>
+      </div>
+
+      <button type="submit" class="btn-submit" id="submitBtn">Submit Intake</button>
+    </form>
+    <div class="out" id="out"></div>
+
+    <script>
+      const INBOUND_SECRET = ${JSON.stringify(inboundSecret)};
+      const CALL_ID = ${JSON.stringify(callId)};
+      const form = document.getElementById("intakeForm");
+      const out = document.getElementById("out");
+      const btn = document.getElementById("submitBtn");
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+
+        const fullName = fd.get("fullName")?.toString().trim() ?? "";
+        const phoneNumber = fd.get("phoneNumber")?.toString().trim() ?? "";
+        if (!fullName || !phoneNumber) {
+          out.className = "out visible error";
+          out.textContent = "Full Name and Phone Number are required.";
+          return;
+        }
+
+        const serviceCategory = fd.getAll("serviceCategory").map(String);
+        if (!serviceCategory.length) {
+          out.className = "out visible error";
+          out.textContent = "Please select at least one Service Category.";
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "Submitting...";
+        out.className = "out";
+        out.textContent = "";
+
+        const payload = {
+          callId: CALL_ID,
+          customerBasics: {
+            fullName,
+            phoneNumber,
+            serviceAddress: fd.get("serviceAddress")?.toString().trim() ?? "",
+            city: fd.get("city")?.toString().trim() ?? "",
+            country: fd.get("country")?.toString().trim() ?? "",
+            provinceState: fd.get("provinceState")?.toString().trim() ?? "",
+            customerType: fd.get("customerType")?.toString() ?? "Owner"
+          },
+          serviceRequest: {
+            serviceCategory,
+            serviceTypes: fd.getAll("serviceTypes").map(String),
+            issueDescription: fd.get("issueDescription")?.toString().trim() ?? ""
+          },
+          locationOfIssue: fd.getAll("locationOfIssue").map(String),
+          urgency: fd.get("urgency")?.toString() ?? "Urgent (24-48 hrs)"
+        };
+
+        try {
+          const res = await fetch("/webhooks/inbound/bitrix/csr-intake", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-inbound-secret": INBOUND_SECRET
+            },
+            body: JSON.stringify(payload)
+          });
+          const json = await res.json();
+          if (!res.ok) {
+            out.className = "out visible error";
+            out.textContent = json.error ?? "Submission failed.";
+          } else {
+            out.className = "out visible success";
+            out.textContent = "Intake submitted successfully." + (json.dealId ? " Deal #" + json.dealId + " created." : "");
+            form.reset();
+            document.querySelector('input[name="phoneNumber"]').value = ${JSON.stringify(phoneNumber)};
+          }
+        } catch (err) {
+          out.className = "out visible error";
+          out.textContent = err?.message ?? "Unexpected error.";
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Submit Intake";
+        }
+      });
+    </script>
+  </body>
+</html>`;
+
+  return res.status(200).send(html);
+});
+
+app.post("/webhooks/inbound/bitrix/csr-intake", async (req: Request, res: Response) => {
+  const secret = req.headers["x-inbound-secret"];
+  if (!config.inboundDealWebhookSecret || secret !== config.inboundDealWebhookSecret) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const body = req.body as {
+    callId?: string;
+    customerBasics?: {
+      fullName?: string;
+      phoneNumber?: string;
+      serviceAddress?: string;
+      city?: string;
+      country?: string;
+      provinceState?: string;
+      customerType?: string;
+    };
+    serviceRequest?: {
+      serviceCategory?: string[];
+      serviceTypes?: string[];
+      issueDescription?: string;
+    };
+    locationOfIssue?: string[];
+    urgency?: string;
+  };
+
+  const { customerBasics, serviceRequest, locationOfIssue, urgency } = body;
+
+  if (!customerBasics?.fullName || !customerBasics?.phoneNumber) {
+    return res.status(400).json({ ok: false, error: "fullName and phoneNumber are required" });
+  }
+
+  const intakePayload = {
+    payload: {
+      customerBasics,
+      serviceRequest,
+      locationOfIssue,
+      urgency
+    }
+  };
+
+  const dealTitle = [
+    customerBasics.fullName,
+    serviceRequest?.serviceCategory?.join(" / ") || "Service Request"
+  ].join(" - ");
+
+  const dealComments = [
+    `Phone: ${customerBasics.phoneNumber}`,
+    `Address: ${[customerBasics.serviceAddress, customerBasics.city, customerBasics.provinceState, customerBasics.country].filter(Boolean).join(", ")}`,
+    `Customer Type: ${customerBasics.customerType ?? ""}`,
+    `Service: ${serviceRequest?.serviceCategory?.join(", ") ?? ""}${serviceRequest?.serviceTypes?.length ? " — " + serviceRequest.serviceTypes.join(", ") : ""}`,
+    `Issue: ${serviceRequest?.issueDescription ?? ""}`,
+    `Location: ${locationOfIssue?.join(", ") ?? ""}`,
+    `Urgency: ${urgency ?? ""}`
+  ].join("\n");
+
+  const [webhookResult, dealResult] = await Promise.allSettled([
+    axios.post(config.csrIntakeWebhookUrl, intakePayload, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 15000
+    }),
+    createBitrixDeal({
+      TITLE: dealTitle,
+      COMMENTS: dealComments,
+      OPENED: "Y"
+    })
+  ]);
+
+  const webhookOk = webhookResult.status === "fulfilled";
+  const dealId = dealResult.status === "fulfilled"
+    ? (dealResult.value as { result?: number }).result
+    : undefined;
+
+  if (!webhookOk) {
+    console.error("CSR intake webhook failed", webhookResult.reason);
+  }
+  if (dealResult.status === "rejected") {
+    console.error("Bitrix deal creation failed", dealResult.reason);
+  }
+
+  return res.status(200).json({
+    ok: true,
+    webhookOk,
+    dealId: dealId ?? null
+  });
 });
 
 async function disableBitrixCallCardWidget(_req: Request, res: Response) {
