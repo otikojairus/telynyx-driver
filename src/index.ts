@@ -663,8 +663,9 @@ async function generateAndSendDealPaymentLink(params: {
     paymentType === "deposit"
       ? `Hi ${customerName || "there"}, please pay your deposit here: ${wave.link}`
       : `Hi ${customerName || "there"}, please pay the callout fee here: ${wave.link}`;
+  const dealName = String(deal.TITLE ?? "").trim() || `Deal ${dealId}`;
   const emailBody =
-    `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link for Deal ${dealId}: ${wave.link}`;
+    `${paymentType === "deposit" ? "Deposit" : "Callout fee"} payment link for ${dealName}: ${wave.link}`;
 
   const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
     attempted: Boolean(sendSms && customerPhone),
@@ -1571,7 +1572,11 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       phoneNumber: "",
       addressPostalCode: "",
       serviceType: "",
-      urgencyLevel: ""
+      urgencyLevel: "",
+      dealTitle: "",
+      pipelineId: "",
+      pipelineName: "",
+      stageName: ""
     };
     const eventRecord = {
       receivedAt,
@@ -1596,17 +1601,13 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       addressPostalCode: dealDetails.addressPostalCode,
       serviceType: dealDetails.serviceType,
       urgencyLevel: dealDetails.urgencyLevel,
+      dealTitle: dealDetails.dealTitle,
+      pipelineId: dealDetails.pipelineId,
+      pipelineName: dealDetails.pipelineName,
+      stageName: dealDetails.stageName,
       rawBody: payload
     };
-
-    await saveBitrixDealRecord(persistentRecord);
-    const outboundForward = await forwardBitrixDealRecord(persistentRecord);
-    if (outboundForward?.enabled) {
-      await saveBitrixDealRecord({
-        ...persistentRecord,
-        outboundForward
-      });
-    }
+    let outboundForward: Awaited<ReturnType<typeof forwardBitrixDealRecord>> | undefined;
 
     const smsResult: { attempted: boolean; sent: boolean; error?: string } = {
       attempted: false,
@@ -1623,6 +1624,8 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       if (!stageId) {
         stageId = String(deal.STAGE_ID ?? "").trim();
       }
+      const pipelineId = String(deal.CATEGORY_ID ?? "").trim();
+      const dealTitle = String(deal.TITLE ?? "").trim();
       const contactIdRaw = deal.CONTACT_ID ?? fields.CONTACT_ID ?? "";
       const contactId = normalizeBitrixEntityId(contactIdRaw);
       const serviceType = buildLeadServiceType(deal);
@@ -1646,7 +1649,26 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
 
       dealDetails.serviceType = serviceType;
       dealDetails.urgencyLevel = urgencyLevel;
+      dealDetails.dealTitle = dealTitle;
+      dealDetails.pipelineId = pipelineId;
       dealDetails.addressPostalCode = [address, postalCode].filter(Boolean).join(" / ");
+
+      try {
+        if (pipelineId) {
+          const categoriesResponse = await listBitrixDealCategories();
+          const categories = (categoriesResponse.result ?? []) as Array<Record<string, unknown>>;
+          const matchingCategory = categories.find((item) => String(item.ID ?? "") === pipelineId);
+          dealDetails.pipelineName = String(matchingCategory?.NAME ?? "").trim();
+        }
+
+        const entityId = pipelineId ? `DEAL_STAGE_${pipelineId}` : "DEAL_STAGE";
+        const stagesResponse = await listBitrixStatuses({ ENTITY_ID: entityId });
+        const stages = (stagesResponse.result ?? []) as Array<Record<string, unknown>>;
+        const matchingStage = stages.find((item) => normalizeStageId(String(item.STATUS_ID ?? "")) === normalizeStageId(stageId));
+        dealDetails.stageName = String(matchingStage?.NAME ?? "").trim();
+      } catch (error) {
+        console.warn("Failed to enrich pipeline/stage names", error instanceof Error ? error.message : error);
+      }
 
       if (contactId) {
         const contactResponse = await getBitrixContactById(contactId);
@@ -1704,15 +1726,28 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         emailResult.error = "Deal has no CONTACT_ID";
       }
 
-      await saveBitrixDealRecord({
+      const finalRecord = {
         ...persistentRecord,
+        stageId,
         ...dealDetails,
-        outboundForward
-      });
+      };
+      await saveBitrixDealRecord(finalRecord);
+      outboundForward = await forwardBitrixDealRecord(finalRecord);
+      if (outboundForward?.enabled) {
+        await saveBitrixDealRecord({
+          ...finalRecord,
+          outboundForward
+        });
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Notification lookup failed";
       smsResult.error = reason;
       emailResult.error = reason;
+      await saveBitrixDealRecord({
+        ...persistentRecord,
+        stageId,
+        ...dealDetails
+      });
     }
 
     let quotePresentedPaymentLink: {

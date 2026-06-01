@@ -52,6 +52,10 @@ export async function initializeDatabase(): Promise<void> {
       address_postal_code TEXT,
       service_type TEXT,
       urgency_level TEXT,
+      deal_title TEXT,
+      pipeline_id TEXT,
+      pipeline_name TEXT,
+      stage_name TEXT,
       raw_body JSONB NOT NULL,
       outbound_forward JSONB
     )
@@ -74,6 +78,18 @@ export async function initializeDatabase(): Promise<void> {
   `);
   await pool.query(`
     ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS urgency_level TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS deal_title TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS pipeline_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS pipeline_name TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE bitrix_deals ADD COLUMN IF NOT EXISTS stage_name TEXT
   `);
 
   await pool.query(`
