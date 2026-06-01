@@ -731,6 +731,38 @@ async function generateAndSendDealPaymentLink(params: {
   };
 }
 
+const BITRIX_SERVICE_CATEGORY_ENUM: Record<string, string> = {
+  "72": "Emergency Plumbing Repair Services",
+  "74": "Drain & Sewer Services",
+  "76": "Water Heater Services",
+  "78": "Plumbing Installation & Fixture Replacement & Repair",
+  "80": "Air Conditioning Installation & Replacement",
+  "82": "Heating System Installation",
+  "84": "Water Damage Restoration",
+  "86": "Insurance Claim assistance",
+  "88": "Callout, Diagnostic and Assessment"
+};
+
+const BITRIX_SERVICE_TYPES_ENUM: Record<string, string> = {
+  "90": "Leaking Faucet Repair",
+  "92": "Running toilet repair",
+  "94": "Clogged Drain",
+  "96": "Minor Pipe / Drain line Repair",
+  "98": "Minor Pipe Repair",
+  "100": "Pipe Repair/replacement",
+  "102": "Burst Pipe Repair",
+  "104": "Frozen Pipe Repair",
+  "106": "Shutoff valve repair / replacement",
+  "108": "Water pressure issue repair",
+  "110": "Overflowing toilet emergency service",
+  "112": "Emergency plumbing leak repair"
+};
+
+function resolveEnumId(enumMap: Record<string, string>, raw: unknown): string {
+  const id = String(raw ?? "").trim();
+  return id ? (enumMap[id] ?? "") : "";
+}
+
 function readFirstNonEmptyString(record: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
@@ -739,6 +771,20 @@ function readFirstNonEmptyString(record: Record<string, unknown>, keys: string[]
     }
   }
   return "";
+}
+
+function readAsStringArray(record: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      const arr = value.map((v) => String(v ?? "").trim()).filter(Boolean);
+      if (arr.length) return arr;
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value.split(/[,;|]/).map((v) => v.trim()).filter(Boolean);
+    }
+  }
+  return [];
 }
 
 app.get("/health", (_req, res) => {
@@ -1246,7 +1292,16 @@ app.post("/webhooks/inbound/bitrix/csr-intake", async (req: Request, res: Respon
     createBitrixDeal({
       TITLE: dealTitle,
       COMMENTS: dealComments,
-      OPENED: "Y"
+      OPENED: "Y",
+      UF_CRM_1780329478655: customerBasics?.city ?? "",
+      UF_CRM_1780329497687: customerBasics?.country ?? "",
+      UF_CRM_1780329514570: customerBasics?.provinceState ?? "",
+      UF_CRM_1780329566834: customerBasics?.customerType ?? "",
+      UF_CRM_1779476638723: customerBasics?.serviceAddress ?? "",
+      UF_CRM_1779476686823: urgency ?? "",
+      UF_CRM_1780329708763: serviceRequest?.serviceCategory?.join(", ") ?? "",
+      UF_CRM_1780330710882: serviceRequest?.issueDescription ?? "",
+      UF_CRM_1780331059027: locationOfIssue?.join(", ") ?? ""
     })
   ]);
 
@@ -1979,9 +2034,11 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         console.warn("Failed to enrich pipeline/stage names", error instanceof Error ? error.message : error);
       }
 
+      let csrContact: Record<string, unknown> = {};
       if (contactId) {
         const contactResponse = await getBitrixContactById(contactId);
         const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+        csrContact = contact;
         const customerName = buildLeadCustomerName(contact);
         const customerPhone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
         const customerEmail = readLeadContactValue(contact.EMAIL);
@@ -2042,6 +2099,57 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
       };
       await saveBitrixDealRecord(finalRecord);
       outboundForward = await forwardBitrixDealRecord(finalRecord);
+
+      if (eventName === "ONCRMDEALADD") {
+        const csrCity = String(deal["UF_CRM_1780329478655"] ?? "").trim();
+        const csrCountry = String(deal["UF_CRM_1780329497687"] ?? "").trim() || "Canada";
+        const csrProvince = String(deal["UF_CRM_1780329514570"] ?? "").trim();
+        const csrCustomerType = String(deal["UF_CRM_1780329566834"] ?? "").trim() || "Owner";
+        const csrServiceAddress = String(deal["UF_CRM_1779476638723"] ?? "").trim() || address;
+        const csrUrgency = String(deal["UF_CRM_1779476686823"] ?? "").trim() || urgencyLevel || "Urgent (24-48 hrs)";
+        const csrIssueDescription = String(deal["UF_CRM_1780330710882"] ?? "").trim()
+          || readFirstNonEmptyString(deal, ["COMMENTS", "DESCRIPTION"]);
+        const csrLocationOfIssue = readAsStringArray(deal, ["UF_CRM_1780331059027"]);
+
+        // Service category: prefer string field, fall back to enum ID lookup, then legacy service type
+        const csrServiceCategoryStr = readAsStringArray(deal, ["UF_CRM_1780329708763"]);
+        const csrServiceCategoryEnum = resolveEnumId(BITRIX_SERVICE_CATEGORY_ENUM, deal["UF_CRM_1780330078905"]);
+        const csrServiceCategory = csrServiceCategoryStr.length
+          ? csrServiceCategoryStr
+          : (csrServiceCategoryEnum ? [csrServiceCategoryEnum] : (serviceType ? [serviceType] : []));
+
+        // Service types: enum ID lookup
+        const csrServiceTypeResolved = resolveEnumId(BITRIX_SERVICE_TYPES_ENUM, deal["UF_CRM_1780330671084"]);
+        const csrServiceTypes = csrServiceTypeResolved ? [csrServiceTypeResolved] : [];
+
+        const csrIntakePayload = {
+          payload: {
+            customerBasics: {
+              fullName: dealDetails.clientName || dealTitle,
+              phoneNumber: dealDetails.phoneNumber,
+              serviceAddress: csrServiceAddress,
+              city: csrCity,
+              country: csrCountry,
+              provinceState: csrProvince,
+              customerType: csrCustomerType
+            },
+            serviceRequest: {
+              serviceCategory: csrServiceCategory,
+              serviceTypes: csrServiceTypes,
+              issueDescription: csrIssueDescription
+            },
+            locationOfIssue: csrLocationOfIssue,
+            urgency: csrUrgency
+          }
+        };
+
+        axios.post(config.csrIntakeWebhookUrl, csrIntakePayload, {
+          headers: { "Content-Type": "application/json" },
+          timeout: 15000
+        }).catch((err: unknown) => {
+          console.error("CSR intake webhook failed on deal create", err instanceof Error ? err.message : err);
+        });
+      }
       if (outboundForward?.enabled) {
         await saveBitrixDealRecord({
           ...finalRecord,
