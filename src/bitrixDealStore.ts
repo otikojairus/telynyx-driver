@@ -16,6 +16,10 @@ export interface BitrixDealRecord {
   addressPostalCode?: string;
   serviceType?: string;
   urgencyLevel?: string;
+  dealTitle?: string;
+  pipelineId?: string;
+  pipelineName?: string;
+  stageName?: string;
   rawBody: BitrixDealEvent;
   outboundForward?: {
     enabled: boolean;
@@ -43,9 +47,13 @@ export async function saveBitrixDealRecord(record: BitrixDealRecord): Promise<vo
         address_postal_code,
         service_type,
         urgency_level,
+        deal_title,
+        pipeline_id,
+        pipeline_name,
+        stage_name,
         raw_body,
         outbound_forward
-      ) VALUES ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)
+      ) VALUES ($1, $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18::jsonb)
       ON CONFLICT (id) DO UPDATE SET
         received_at = EXCLUDED.received_at,
         event_name = EXCLUDED.event_name,
@@ -58,6 +66,10 @@ export async function saveBitrixDealRecord(record: BitrixDealRecord): Promise<vo
         address_postal_code = EXCLUDED.address_postal_code,
         service_type = EXCLUDED.service_type,
         urgency_level = EXCLUDED.urgency_level,
+        deal_title = EXCLUDED.deal_title,
+        pipeline_id = EXCLUDED.pipeline_id,
+        pipeline_name = EXCLUDED.pipeline_name,
+        stage_name = EXCLUDED.stage_name,
         raw_body = EXCLUDED.raw_body,
         outbound_forward = EXCLUDED.outbound_forward
     `,
@@ -74,6 +86,10 @@ export async function saveBitrixDealRecord(record: BitrixDealRecord): Promise<vo
       record.addressPostalCode ?? null,
       record.serviceType ?? null,
       record.urgencyLevel ?? null,
+      record.dealTitle ?? null,
+      record.pipelineId ?? null,
+      record.pipelineName ?? null,
+      record.stageName ?? null,
       JSON.stringify(record.rawBody),
       JSON.stringify(record.outboundForward ?? null)
     ]
