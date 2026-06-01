@@ -758,6 +758,18 @@ const BITRIX_SERVICE_TYPES_ENUM: Record<string, string> = {
   "112": "Emergency plumbing leak repair"
 };
 
+function formatMatchedVendors(vendors: Array<Record<string, unknown>>): string {
+  return vendors
+    .map((v) => {
+      const rank = v.display_rank ?? "";
+      const name = v.vendor_name ?? "";
+      const phone = v.phone ?? "";
+      const email = v.email ?? "";
+      return [`#${rank} ${name}`, phone, email].filter(Boolean).join(" | ");
+    })
+    .join("\n");
+}
+
 function resolveEnumId(enumMap: Record<string, string>, raw: unknown): string {
   const id = String(raw ?? "").trim();
   return id ? (enumMap[id] ?? "") : "";
@@ -1315,6 +1327,23 @@ app.post("/webhooks/inbound/bitrix/csr-intake", async (req: Request, res: Respon
   }
   if (dealResult.status === "rejected") {
     console.error("Bitrix deal creation failed", dealResult.reason);
+  }
+
+  if (webhookOk && dealId) {
+    try {
+      const vendors = (
+        (webhookResult.value as { data?: { data?: { samDispatch?: { vendors?: Array<Record<string, unknown>> } } } })
+          .data?.data?.samDispatch?.vendors ?? []
+      );
+      if (vendors.length) {
+        await updateBitrixDealFields({
+          dealId: String(dealId),
+          fields: { UF_CRM_1780342754: formatMatchedVendors(vendors) }
+        });
+      }
+    } catch (err) {
+      console.error("Failed to update matched vendors field", err instanceof Error ? err.message : err);
+    }
   }
 
   return res.status(200).json({
@@ -2146,6 +2175,17 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
         axios.post(config.csrIntakeWebhookUrl, csrIntakePayload, {
           headers: { "Content-Type": "application/json" },
           timeout: 15000
+        }).then(async (response) => {
+          const vendors = (
+            (response.data as { data?: { samDispatch?: { vendors?: Array<Record<string, unknown>> } } })
+              ?.data?.samDispatch?.vendors ?? []
+          );
+          if (vendors.length) {
+            await updateBitrixDealFields({
+              dealId,
+              fields: { UF_CRM_1780342754: formatMatchedVendors(vendors) }
+            });
+          }
         }).catch((err: unknown) => {
           console.error("CSR intake webhook failed on deal create", err instanceof Error ? err.message : err);
         });
