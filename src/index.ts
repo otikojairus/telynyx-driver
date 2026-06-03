@@ -758,6 +758,29 @@ const BITRIX_SERVICE_TYPES_ENUM: Record<string, string> = {
   "112": "Emergency plumbing leak repair"
 };
 
+const VENDOR_ACQUISITION_PIPELINE_MAP: Record<string, { categoryId: string; stageId: string }> = {
+  "plumbing": { categoryId: "20", stageId: "C20:NEW" },
+  "hvac": { categoryId: "22", stageId: "C22:NEW" },
+  "roofing": { categoryId: "24", stageId: "C24:NEW" },
+  "septic": { categoryId: "12", stageId: "C12:NEW" },
+  "mold": { categoryId: "16", stageId: "C16:NEW" },
+  "flood": { categoryId: "18", stageId: "C18:NEW" },
+  "water damage": { categoryId: "18", stageId: "C18:NEW" },
+  "water damage restoration": { categoryId: "18", stageId: "C18:NEW" },
+};
+
+const VENDOR_ACQUISITION_DEFAULT_PIPELINE = { categoryId: "26", stageId: "C26:NEW" };
+
+function getVendorAcquisitionPipeline(serviceVertical: string): { categoryId: string; stageId: string } {
+  const key = serviceVertical.toLowerCase().trim();
+  for (const [pattern, pipeline] of Object.entries(VENDOR_ACQUISITION_PIPELINE_MAP)) {
+    if (key.includes(pattern)) {
+      return pipeline;
+    }
+  }
+  return VENDOR_ACQUISITION_DEFAULT_PIPELINE;
+}
+
 function formatMatchedVendors(vendors: Array<Record<string, unknown>>): string {
   return vendors
     .map((v) => {
@@ -1331,15 +1354,23 @@ app.post("/webhooks/inbound/bitrix/csr-intake", async (req: Request, res: Respon
 
   if (webhookOk && dealId) {
     try {
-      const vendors = (
-        (webhookResult.value as { data?: { data?: { samDispatch?: { vendors?: Array<Record<string, unknown>> } } } })
-          .data?.data?.samDispatch?.vendors ?? []
-      );
+      const intakeData = (webhookResult.value as { data?: { data?: { serviceVertical?: string; samDispatch?: { vendors?: Array<Record<string, unknown>> } } } }).data?.data;
+      const vendors = intakeData?.samDispatch?.vendors ?? [];
       if (vendors.length) {
         await updateBitrixDealFields({
           dealId: String(dealId),
           fields: { UF_CRM_1780342754: formatMatchedVendors(vendors) }
         });
+      } else {
+        const serviceVertical = intakeData?.serviceVertical || serviceRequest?.serviceCategory?.[0] || "";
+        if (serviceVertical) {
+          const pipeline = getVendorAcquisitionPipeline(serviceVertical);
+          await updateBitrixDealFields({
+            dealId: String(dealId),
+            fields: { CATEGORY_ID: pipeline.categoryId, STAGE_ID: pipeline.stageId }
+          });
+          console.log(`No vendors found — moved deal ${dealId} to pipeline ${pipeline.categoryId} (${serviceVertical})`);
+        }
       }
     } catch (err) {
       console.error("Failed to update matched vendors field", err instanceof Error ? err.message : err);
@@ -2176,15 +2207,23 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
           headers: { "Content-Type": "application/json" },
           timeout: 15000
         }).then(async (response) => {
-          const vendors = (
-            (response.data as { data?: { samDispatch?: { vendors?: Array<Record<string, unknown>> } } })
-              ?.data?.samDispatch?.vendors ?? []
-          );
+          const intakeData = (response.data as { data?: { serviceVertical?: string; samDispatch?: { vendors?: Array<Record<string, unknown>> } } })?.data;
+          const vendors = intakeData?.samDispatch?.vendors ?? [];
           if (vendors.length) {
             await updateBitrixDealFields({
               dealId,
               fields: { UF_CRM_1780342754: formatMatchedVendors(vendors) }
             });
+          } else {
+            const serviceVertical = intakeData?.serviceVertical || csrServiceCategory[0] || "";
+            if (serviceVertical) {
+              const pipeline = getVendorAcquisitionPipeline(serviceVertical);
+              await updateBitrixDealFields({
+                dealId,
+                fields: { CATEGORY_ID: pipeline.categoryId, STAGE_ID: pipeline.stageId }
+              });
+              console.log(`No vendors found — moved deal ${dealId} to pipeline ${pipeline.categoryId} (${serviceVertical})`);
+            }
           }
         }).catch((err: unknown) => {
           console.error("CSR intake webhook failed on deal create", err instanceof Error ? err.message : err);
