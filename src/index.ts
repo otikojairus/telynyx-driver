@@ -793,6 +793,20 @@ function getVendorAcquisitionPipeline(serviceVertical: string): { categoryId: st
   return VENDOR_ACQUISITION_DEFAULT_PIPELINE;
 }
 
+async function moveDealToVendorAcquisitionPipeline(params: {
+  dealId: string;
+  pipeline: { categoryId: string; stageId: string };
+}) {
+  await updateBitrixDealFields({
+    dealId: params.dealId,
+    fields: { CATEGORY_ID: params.pipeline.categoryId }
+  });
+  await updateBitrixDealFields({
+    dealId: params.dealId,
+    fields: { STAGE_ID: params.pipeline.stageId }
+  });
+}
+
 function formatMatchedVendors(vendors: Array<Record<string, unknown>>): string {
   return vendors
     .map((v) => {
@@ -1486,9 +1500,9 @@ app.post("/webhooks/inbound/bitrix/csr-intake", async (req: Request, res: Respon
         const serviceVertical = intakeData?.serviceVertical || serviceRequest?.serviceCategory?.[0] || "";
         if (serviceVertical) {
           const pipeline = getVendorAcquisitionPipeline(serviceVertical);
-          await updateBitrixDealFields({
+          await moveDealToVendorAcquisitionPipeline({
             dealId: String(dealId),
-            fields: { CATEGORY_ID: pipeline.categoryId, STAGE_ID: pipeline.stageId }
+            pipeline
           });
           console.log(`No vendors found — moved deal ${dealId} to pipeline ${pipeline.categoryId} (${serviceVertical})`);
         }
@@ -2349,9 +2363,9 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
             const serviceVertical = intakeData?.serviceVertical || csrServiceCategory[0] || "";
             if (serviceVertical) {
               const pipeline = getVendorAcquisitionPipeline(serviceVertical);
-              await updateBitrixDealFields({
+              await moveDealToVendorAcquisitionPipeline({
                 dealId,
-                fields: { CATEGORY_ID: pipeline.categoryId, STAGE_ID: pipeline.stageId }
+                pipeline
               });
               console.log(`No vendors found — moved deal ${dealId} to pipeline ${pipeline.categoryId} (${serviceVertical})`);
             }
