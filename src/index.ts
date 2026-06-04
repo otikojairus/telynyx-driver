@@ -771,7 +771,7 @@ const VENDOR_ACQUISITION_PIPELINE_MAP: Record<string, { categoryId: string; stag
 };
 
 const VENDOR_ACQUISITION_DEFAULT_PIPELINE = { categoryId: "26", stageId: "C26:NEW" };
-const DEAL_MATCH_API_URL = "https://global-node.thefvg.com/api/v1/deals/match";
+const DEAL_MATCH_API_URL = "https://global-node.thefvg.com/api/v1/deals/match?limit=12&country=canada";
 const DEAL_MATCH_BITRIX_FIELD = "UF_CRM_1780590038641";
 
 interface DealMatchParams {
@@ -999,7 +999,10 @@ function compactDealMatchParams(params: DealMatchParams): DealMatchParams {
 }
 
 function buildDealMatchQuery(params: DealMatchParams): URLSearchParams {
-  const query = new URLSearchParams();
+  const query = new URLSearchParams({
+    limit: "12",
+    country: "canada"
+  });
 
   for (const key of ["country", "provinceState", "city", "postalCode", "issueNeed", "vertical", "dealType"] as const) {
     const value = String(params[key] ?? "").trim();
@@ -1014,7 +1017,7 @@ function buildDealMatchQuery(params: DealMatchParams): URLSearchParams {
 async function fetchDealMatchData(matchParamsInput: DealMatchParams): Promise<unknown> {
   const matchParams = compactDealMatchParams(matchParamsInput);
   const query = buildDealMatchQuery(matchParams);
-  const requestUrl = query.size ? `${DEAL_MATCH_API_URL}?${query.toString()}` : DEAL_MATCH_API_URL;
+  const requestUrl = `${DEAL_MATCH_API_URL.split("?")[0]}?${query.toString()}`;
   const response = await axios.get(requestUrl, {
     headers: config.weatherWebhookSecret
       ? { Authorization: `Bearer ${config.weatherWebhookSecret}` }
@@ -1030,7 +1033,7 @@ async function updateDealMatchesField(params: { dealId: string; matchParams: Dea
   await updateBitrixDealFields({
     dealId: params.dealId,
     fields: {
-      [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetails(matchData)
+      [DEAL_MATCH_BITRIX_FIELD]: JSON.stringify(matchData, null, 2)
     }
   });
 }
@@ -1377,7 +1380,7 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
     void updateBitrixDealFields({
       dealId,
       fields: {
-        [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetails(matchData)
+        [DEAL_MATCH_BITRIX_FIELD]: JSON.stringify(matchData, null, 2)
       }
     }).catch((err: unknown) => {
       console.error("Failed to sync funding field from widget", err instanceof Error ? err.message : err);
