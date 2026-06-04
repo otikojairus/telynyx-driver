@@ -22,9 +22,12 @@ Bitrix agent reply -> Middleware -> Telnyx -> Customer SMS
 
 ```text
 basic
+crm
 im
 imopenlines
 imconnector
+placement
+telephony
 ```
 
 ## Environment

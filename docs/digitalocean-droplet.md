@@ -230,9 +230,12 @@ https://sms.example.com/bitrix/install
 
 ```text
 basic
+crm
 im
 imopenlines
 imconnector
+placement
+telephony
 ```
 
 9. Click `Save`.

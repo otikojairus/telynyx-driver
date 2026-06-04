@@ -977,54 +977,36 @@ function formatFundingResult(result: Record<string, unknown>, index: number): st
   return lines.join("\n");
 }
 
-function clipTableCell(value: unknown, width: number): string {
-  const text = String(value ?? "")
+function normalizeFundingFieldText(value: unknown): string {
+  return String(value ?? "")
     .replace(/\s+/g, " ")
-    .trim();
-  if (text.length <= width) {
-    return text.padEnd(width, " ");
-  }
-  return `${text.slice(0, Math.max(0, width - 1))}…`;
+    .trim() || "Not provided";
 }
 
-function renderAsciiTable(headers: string[], rows: string[][], widths: number[]): string {
-  const divider = `+${widths.map((width) => "-".repeat(width + 2)).join("+")}+`;
-  const renderRow = (cells: string[]) =>
-    `| ${cells.map((cell, index) => clipTableCell(cell, widths[index])).join(" | ")} |`;
-
-  return [
-    divider,
-    renderRow(headers),
-    divider,
-    ...rows.map(renderRow),
-    divider
-  ].join("\n");
-}
-
-function formatFundingDetailsTable(matchData: unknown): string {
+function formatFundingDetailsSummary(matchData: unknown): string {
   const results = extractFundingResults(matchData);
   if (!results.length) {
     return "No funding matches returned.";
   }
 
-  const rows = results.map((result, index) => [
-    String(index + 1),
-    String(result.title ?? ""),
-    String(result.programTypeLabel || result.dealType || ""),
-    String(result.fundingFocus ?? ""),
-    formatFundingAmount(result),
-    formatFundingGeography(result.geography),
-    String(result.matchScore ?? ""),
-    String(result.matchStatus ?? ""),
-    String(result.recommendedNextAction ?? ""),
-    String(result.sourceUrl ?? "")
-  ]);
+  return results
+    .map((result, index) => {
+      const lines = [
+        `${index + 1}. ${normalizeFundingFieldText(result.title)}`,
+        `Type: ${normalizeFundingFieldText(result.programTypeLabel || result.dealType)}`,
+        `Focus: ${normalizeFundingFieldText(result.fundingFocus)}`,
+        `Amount: ${formatFundingAmount(result)}`,
+        `Location: ${formatFundingGeography(result.geography)}`,
+        `Score: ${normalizeFundingFieldText(result.matchScore)} (${normalizeFundingFieldText(result.matchStatus)})`,
+        `Action: ${normalizeFundingFieldText(result.recommendedNextAction)}`,
+        `Why: ${formatFundingList(result.matchReason)}`,
+        `Missing: ${formatFundingList(result.missingCriteria)}`,
+        `URL: ${normalizeFundingFieldText(result.sourceUrl)}`
+      ];
 
-  return renderAsciiTable(
-    ["#", "Title", "Type", "Focus", "Amount", "Location", "Score", "Status", "Action", "URL"],
-    rows,
-    [3, 36, 14, 18, 16, 22, 5, 10, 16, 42]
-  );
+      return lines.join("\n");
+    })
+    .join("\n\n----------------------------------------\n\n");
 }
 
 function formatFundingDetails(matchData: unknown): string {
@@ -1083,7 +1065,7 @@ async function updateDealMatchesField(params: { dealId: string; matchParams: Dea
   await updateBitrixDealFields({
     dealId: params.dealId,
     fields: {
-      [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetailsTable(matchData)
+      [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetailsSummary(matchData)
     }
   });
 }
@@ -1429,7 +1411,7 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
     void updateBitrixDealFields({
       dealId,
       fields: {
-        [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetailsTable(matchData)
+        [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetailsSummary(matchData)
       }
     }).catch((err: unknown) => {
       console.error("Failed to sync funding field from widget", err instanceof Error ? err.message : err);

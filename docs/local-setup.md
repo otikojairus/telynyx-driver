@@ -99,9 +99,12 @@ https://abc123.ngrok-free.app/bitrix/install
 
 ```text
 basic
+crm
 im
 imopenlines
 imconnector
+placement
+telephony
 ```
 
 9. Click `Save`.
