@@ -7,6 +7,7 @@ import {
   activateBitrixConnector,
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
+  bindBitrixDealFundingWidget,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
@@ -944,6 +945,15 @@ function cleanFundingDescription(value: unknown): string {
   return text.length > 240 ? `${text.slice(0, 237).trim()}...` : text;
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function formatFundingResult(result: Record<string, unknown>, index: number): string {
   const description = cleanFundingDescription(result.description);
   const lines = [
@@ -1001,8 +1011,8 @@ function buildDealMatchQuery(params: DealMatchParams): URLSearchParams {
   return query;
 }
 
-async function updateDealMatchesField(params: { dealId: string; matchParams: DealMatchParams }) {
-  const matchParams = compactDealMatchParams(params.matchParams);
+async function fetchDealMatchData(matchParamsInput: DealMatchParams): Promise<unknown> {
+  const matchParams = compactDealMatchParams(matchParamsInput);
   const query = buildDealMatchQuery(matchParams);
   const requestUrl = query.size ? `${DEAL_MATCH_API_URL}?${query.toString()}` : DEAL_MATCH_API_URL;
   const response = await axios.get(requestUrl, {
@@ -1011,7 +1021,11 @@ async function updateDealMatchesField(params: { dealId: string; matchParams: Dea
       : undefined,
     timeout: 15000
   });
-  const matchData = (response.data as { data?: unknown })?.data ?? response.data;
+  return response.data;
+}
+
+async function updateDealMatchesField(params: { dealId: string; matchParams: DealMatchParams }) {
+  const matchData = await fetchDealMatchData(params.matchParams);
 
   await updateBitrixDealFields({
     dealId: params.dealId,
@@ -1019,6 +1033,99 @@ async function updateDealMatchesField(params: { dealId: string; matchParams: Dea
       [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetails(matchData)
     }
   });
+}
+
+function renderFundingCard(result: Record<string, unknown>, index: number): string {
+  const title = escapeHtml(result.title || `Funding Match ${index + 1}`);
+  const description = cleanFundingDescription(result.description);
+  const sourceUrl = String(result.sourceUrl ?? "").trim();
+  const tags = Array.isArray(result.tags)
+    ? result.tags.map((tag) => String(tag ?? "").trim()).filter(Boolean)
+    : [];
+  const matchReason = formatFundingList(result.matchReason);
+  const missingCriteria = formatFundingList(result.missingCriteria);
+
+  return `
+    <article class="funding-card">
+      <div class="card-top">
+        <div>
+          <h2>${title}</h2>
+          <div class="meta">${escapeHtml(result.programTypeLabel || result.dealType)} · ${escapeHtml(result.status)}</div>
+        </div>
+        <div class="score">${escapeHtml(result.matchScore)}%</div>
+      </div>
+      ${description ? `<p class="summary">${escapeHtml(description)}</p>` : ""}
+      <dl>
+        <div><dt>Focus</dt><dd>${escapeHtml(formatFundingPrimitive(result.fundingFocus))}</dd></div>
+        <div><dt>Amount</dt><dd>${escapeHtml(formatFundingAmount(result))}</dd></div>
+        <div><dt>Geography</dt><dd>${escapeHtml(formatFundingGeography(result.geography))}</dd></div>
+        <div><dt>Deadline</dt><dd>${escapeHtml(formatFundingPrimitive(result.deadline))}</dd></div>
+        <div><dt>Match</dt><dd>${escapeHtml(formatFundingPrimitive(result.matchStatus))}</dd></div>
+        <div><dt>Next Action</dt><dd>${escapeHtml(formatFundingPrimitive(result.recommendedNextAction))}</dd></div>
+      </dl>
+      <div class="note"><strong>Why:</strong> ${escapeHtml(matchReason)}</div>
+      ${missingCriteria !== "None" ? `<div class="note muted"><strong>Missing:</strong> ${escapeHtml(missingCriteria)}</div>` : ""}
+      ${tags.length ? `<div class="tags">${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
+      ${sourceUrl ? `<a class="link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Open funding source</a>` : ""}
+    </article>
+  `;
+}
+
+function renderFundingMatchesHtml(params: {
+  dealId: string;
+  matchParams: DealMatchParams;
+  results: Array<Record<string, unknown>>;
+  totalMatches?: unknown;
+  error?: string;
+}): string {
+  const matchParams = compactDealMatchParams(params.matchParams);
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Funding Matches</title>
+    <style>
+      body { margin: 0; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #172033; background: #f6f8fb; }
+      .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+      h1 { margin: 0; font-size: 18px; line-height: 1.25; }
+      .sub { margin-top: 4px; color: #667085; font-size: 13px; }
+      .count { background: #e8f1ff; color: #175cd3; border: 1px solid #caddff; border-radius: 999px; padding: 5px 9px; font-size: 12px; white-space: nowrap; }
+      .query { margin: 0 0 14px; color: #475467; font-size: 12px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+      .funding-card { background: white; border: 1px solid #dfe5ef; border-radius: 8px; padding: 14px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .card-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+      h2 { margin: 0; font-size: 15px; line-height: 1.3; color: #101828; }
+      .meta { margin-top: 4px; color: #667085; font-size: 12px; }
+      .score { min-width: 42px; text-align: center; border-radius: 6px; padding: 5px 7px; background: #ecfdf3; color: #067647; font-weight: 700; font-size: 12px; }
+      .summary { margin: 10px 0; color: #344054; font-size: 13px; line-height: 1.45; }
+      dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 12px 0; }
+      dt { color: #667085; font-size: 11px; text-transform: uppercase; }
+      dd { margin: 2px 0 0; color: #101828; font-size: 13px; overflow-wrap: anywhere; }
+      .note { margin-top: 8px; color: #344054; font-size: 12px; line-height: 1.4; }
+      .muted { color: #667085; }
+      .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+      .tags span { background: #f2f4f7; border: 1px solid #eaecf0; color: #344054; border-radius: 999px; padding: 3px 7px; font-size: 11px; }
+      .link { display: inline-flex; margin-top: 12px; color: #175cd3; font-size: 13px; text-decoration: none; font-weight: 600; }
+      .empty, .error { background: white; border: 1px solid #dfe5ef; border-radius: 8px; padding: 16px; color: #475467; }
+      .error { border-color: #fecdca; color: #b42318; background: #fffbfa; }
+      @media (max-width: 560px) { body { padding: 12px; } .header { display: block; } .count { display: inline-block; margin-top: 8px; } dl { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>Funding Matches</h1>
+        <div class="sub">Deal ${escapeHtml(params.dealId)}</div>
+      </div>
+      <div class="count">${escapeHtml(params.results.length)} shown${params.totalMatches !== undefined ? ` of ${escapeHtml(params.totalMatches)}` : ""}</div>
+    </div>
+    ${Object.keys(matchParams).length ? `<p class="query">${escapeHtml(Object.entries(matchParams).map(([key, value]) => `${humanizeFundingKey(key)}: ${value}`).join(" · "))}</p>` : ""}
+    ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
+    ${!params.error && params.results.length ? `<div class="grid">${params.results.map(renderFundingCard).join("")}</div>` : ""}
+    ${!params.error && !params.results.length ? `<div class="empty">No funding matches returned for this deal.</div>` : ""}
+  </body>
+</html>`;
 }
 
 function updateDealMatchesFieldNonBlocking(params: { dealId: string; matchParams: DealMatchParams; source: string }) {
@@ -1168,6 +1275,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
+    const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
@@ -1185,7 +1293,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -1219,6 +1327,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
+    const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
@@ -1227,10 +1336,67 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, callCardWidgetBind, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, callCardWidgetBind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
+  }
+});
+
+app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
+  const placementOptions = parsePlacementOptions({
+    PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
+  });
+  const dealId = String(placementOptions.ID ?? "").trim();
+
+  if (!dealId) {
+    return res.status(200).send(renderFundingMatchesHtml({
+      dealId: "Not found",
+      matchParams: {},
+      results: [],
+      error: "Missing deal ID from Bitrix placement context."
+    }));
+  }
+
+  try {
+    const dealResponse = await getBitrixDealById(dealId);
+    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+    const serviceType = buildLeadServiceType(deal);
+    const postalCode = readFirstNonEmptyString(deal, [
+      "UF_CRM_POSTAL_CODE",
+      "ADDRESS_POSTAL_CODE",
+      "POSTAL_CODE"
+    ]);
+    const matchParams = buildDealMatchParamsFromBitrixDeal({ deal, serviceType, postalCode });
+    const matchData = await fetchDealMatchData(matchParams);
+    const results = extractFundingResults(matchData);
+    const totalMatches = isPlainRecord(matchData) && isPlainRecord(matchData.data)
+      ? matchData.data.totalMatches
+      : undefined;
+
+    void updateBitrixDealFields({
+      dealId,
+      fields: {
+        [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetails(matchData)
+      }
+    }).catch((err: unknown) => {
+      console.error("Failed to sync funding field from widget", err instanceof Error ? err.message : err);
+    });
+
+    return res.status(200).send(renderFundingMatchesHtml({
+      dealId,
+      matchParams,
+      results,
+      totalMatches
+    }));
+  } catch (error) {
+    console.error("Failed to render funding matches widget", error);
+    return res.status(200).send(renderFundingMatchesHtml({
+      dealId,
+      matchParams: {},
+      results: [],
+      error: error instanceof Error ? error.message : "Funding matches could not be loaded."
+    }));
   }
 });
 

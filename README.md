@@ -362,7 +362,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 
 ### `POST /bitrix/connector/register`
 
-- Purpose: Re-register connector and rebind Bitrix connector/deal/lead webhook events, including Deal payment-link widget placement.
+- Purpose: Re-register connector and rebind Bitrix connector/deal/lead webhook events, including Deal payment-link and funding-match widget placements.
 - Auth: None.
 - Request body: None.
 - Response: `{ ok, register, activate, eventBind, dealEventBind, leadEventBind, status }`.
@@ -375,6 +375,16 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
   - Reads `dealId` from Bitrix `PLACEMENT_OPTIONS`.
   - Calls `/webhooks/inbound/bitrix/deals/payment-links` on button click.
   - Registered on Deal placements `CRM_DEAL_DETAIL_ACTIVITY` and `CRM_DEAL_DETAIL_TAB` for better visibility across Bitrix UIs.
+
+### `ALL /bitrix/widgets/deal-funding`
+
+- Purpose: Bitrix Deal tab that renders available funding matches as cards.
+- Auth: Bitrix placement context.
+- Notes:
+  - Reads `dealId` from Bitrix `PLACEMENT_OPTIONS`.
+  - Calls the funding match API server-side using `WEATHER_WEBHOOK_SECRET` as a Bearer token.
+  - Syncs the formatted funding summary back to `UF_CRM_1780590038641`.
+  - Registered on Deal placement `CRM_DEAL_DETAIL_TAB`.
 
 ### `POST /bitrix/leads/register`
 
