@@ -819,6 +819,167 @@ function formatMatchedVendors(vendors: Array<Record<string, unknown>>): string {
     .join("\n");
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function humanizeFundingKey(key: string): string {
+  return key
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatFundingPrimitive(value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return "Not provided";
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  return String(value);
+}
+
+function formatFundingValue(value: unknown, indent = 0): string[] {
+  const prefix = "  ".repeat(indent);
+
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      return [`${prefix}None`];
+    }
+
+    return value.flatMap((item, index) => {
+      if (isPlainRecord(item) || Array.isArray(item)) {
+        return [`${prefix}${index + 1}.`, ...formatFundingValue(item, indent + 1)];
+      }
+      return [`${prefix}${index + 1}. ${formatFundingPrimitive(item)}`];
+    });
+  }
+
+  if (isPlainRecord(value)) {
+    const lines: string[] = [];
+    for (const [key, fieldValue] of Object.entries(value)) {
+      if (isPlainRecord(fieldValue) || Array.isArray(fieldValue)) {
+        lines.push(`${prefix}${humanizeFundingKey(key)}:`);
+        lines.push(...formatFundingValue(fieldValue, indent + 1));
+      } else {
+        lines.push(`${prefix}${humanizeFundingKey(key)}: ${formatFundingPrimitive(fieldValue)}`);
+      }
+    }
+    return lines.length ? lines : [`${prefix}None`];
+  }
+
+  return [`${prefix}${formatFundingPrimitive(value)}`];
+}
+
+function extractFundingResults(matchData: unknown): Array<Record<string, unknown>> {
+  const candidates = [
+    isPlainRecord(matchData) ? matchData.result : undefined,
+    isPlainRecord(matchData) ? matchData.results : undefined,
+    isPlainRecord(matchData) && isPlainRecord(matchData.data) ? matchData.data.result : undefined,
+    isPlainRecord(matchData) && isPlainRecord(matchData.data) ? matchData.data.results : undefined
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate.filter(isPlainRecord);
+    }
+    if (isPlainRecord(candidate)) {
+      return [candidate];
+    }
+  }
+
+  return [];
+}
+
+function formatFundingAmount(result: Record<string, unknown>): string {
+  const currency = String(result.currency ?? "").trim();
+  const min = result.valueMin;
+  const max = result.valueMax;
+
+  if ((min === null || min === undefined || min === "") && (max === null || max === undefined || max === "")) {
+    return "Not specified";
+  }
+  if (min !== null && min !== undefined && min !== "" && max !== null && max !== undefined && max !== "") {
+    return `${currency ? `${currency} ` : ""}${min} - ${max}`;
+  }
+  return `${currency ? `${currency} ` : ""}${min ?? max}`;
+}
+
+function formatFundingGeography(geography: unknown): string {
+  if (!isPlainRecord(geography)) {
+    return "Not specified";
+  }
+
+  return [
+    geography.city,
+    geography.region,
+    geography.state,
+    geography.province,
+    geography.country,
+    geography.postalCode
+  ]
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join(", ") || "Not specified";
+}
+
+function formatFundingList(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return String(value ?? "").trim() || "None";
+  }
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean).join(", ") || "None";
+}
+
+function cleanFundingDescription(value: unknown): string {
+  const text = String(value ?? "")
+    .replace(/\*\*/g, "")
+    .replace(/^URL:\s*/i, "")
+    .trim();
+  if (!text) {
+    return "";
+  }
+  return text.length > 240 ? `${text.slice(0, 237).trim()}...` : text;
+}
+
+function formatFundingResult(result: Record<string, unknown>, index: number): string {
+  const description = cleanFundingDescription(result.description);
+  const lines = [
+    `${index + 1}. ${formatFundingPrimitive(result.title)}`,
+    `Type: ${formatFundingPrimitive(result.programTypeLabel || result.dealType)}`,
+    `Focus: ${formatFundingPrimitive(result.fundingFocus)}`,
+    `Amount: ${formatFundingAmount(result)}`,
+    `Status: ${formatFundingPrimitive(result.status)} (${formatFundingPrimitive(result.matchStatus)}; score ${formatFundingPrimitive(result.matchScore)})`,
+    `Geography: ${formatFundingGeography(result.geography)}`,
+    `Deadline: ${formatFundingPrimitive(result.deadline)}`,
+    `Match reason: ${formatFundingList(result.matchReason)}`,
+    `Missing criteria: ${formatFundingList(result.missingCriteria)}`,
+    `Next action: ${formatFundingPrimitive(result.recommendedNextAction)}`,
+    `URL: ${formatFundingPrimitive(result.sourceUrl)}`
+  ];
+
+  if (description && description !== String(result.sourceUrl ?? "").trim()) {
+    lines.splice(2, 0, `Summary: ${description}`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatFundingDetails(matchData: unknown): string {
+  const results = extractFundingResults(matchData);
+  if (results.length) {
+    return results.map(formatFundingResult).join("\n\n");
+  }
+
+  if (isPlainRecord(matchData) || Array.isArray(matchData)) {
+    return formatFundingValue(matchData).join("\n");
+  }
+
+  return "No funding details returned.";
+}
+
 function compactDealMatchParams(params: DealMatchParams): DealMatchParams {
   return Object.fromEntries(
     Object.entries(params)
@@ -855,7 +1016,7 @@ async function updateDealMatchesField(params: { dealId: string; matchParams: Dea
   await updateBitrixDealFields({
     dealId: params.dealId,
     fields: {
-      [DEAL_MATCH_BITRIX_FIELD]: JSON.stringify(matchData, null, 2)
+      [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetails(matchData)
     }
   });
 }
