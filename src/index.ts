@@ -977,6 +977,56 @@ function formatFundingResult(result: Record<string, unknown>, index: number): st
   return lines.join("\n");
 }
 
+function clipTableCell(value: unknown, width: number): string {
+  const text = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= width) {
+    return text.padEnd(width, " ");
+  }
+  return `${text.slice(0, Math.max(0, width - 1))}…`;
+}
+
+function renderAsciiTable(headers: string[], rows: string[][], widths: number[]): string {
+  const divider = `+${widths.map((width) => "-".repeat(width + 2)).join("+")}+`;
+  const renderRow = (cells: string[]) =>
+    `| ${cells.map((cell, index) => clipTableCell(cell, widths[index])).join(" | ")} |`;
+
+  return [
+    divider,
+    renderRow(headers),
+    divider,
+    ...rows.map(renderRow),
+    divider
+  ].join("\n");
+}
+
+function formatFundingDetailsTable(matchData: unknown): string {
+  const results = extractFundingResults(matchData);
+  if (!results.length) {
+    return "No funding matches returned.";
+  }
+
+  const rows = results.map((result, index) => [
+    String(index + 1),
+    String(result.title ?? ""),
+    String(result.programTypeLabel || result.dealType || ""),
+    String(result.fundingFocus ?? ""),
+    formatFundingAmount(result),
+    formatFundingGeography(result.geography),
+    String(result.matchScore ?? ""),
+    String(result.matchStatus ?? ""),
+    String(result.recommendedNextAction ?? ""),
+    String(result.sourceUrl ?? "")
+  ]);
+
+  return renderAsciiTable(
+    ["#", "Title", "Type", "Focus", "Amount", "Location", "Score", "Status", "Action", "URL"],
+    rows,
+    [3, 36, 14, 18, 16, 22, 5, 10, 16, 42]
+  );
+}
+
 function formatFundingDetails(matchData: unknown): string {
   const results = extractFundingResults(matchData);
   if (results.length) {
@@ -1033,7 +1083,7 @@ async function updateDealMatchesField(params: { dealId: string; matchParams: Dea
   await updateBitrixDealFields({
     dealId: params.dealId,
     fields: {
-      [DEAL_MATCH_BITRIX_FIELD]: JSON.stringify(matchData, null, 2)
+      [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetailsTable(matchData)
     }
   });
 }
@@ -1379,7 +1429,7 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
     void updateBitrixDealFields({
       dealId,
       fields: {
-        [DEAL_MATCH_BITRIX_FIELD]: JSON.stringify(matchData, null, 2)
+        [DEAL_MATCH_BITRIX_FIELD]: formatFundingDetailsTable(matchData)
       }
     }).catch((err: unknown) => {
       console.error("Failed to sync funding field from widget", err instanceof Error ? err.message : err);
