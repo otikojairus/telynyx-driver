@@ -43,5 +43,6 @@ export const config = {
   waveBusinessId: process.env.WAVE_BUSINESS_ID ?? "",
   waveProductId: process.env.WAVE_PRODUCT_ID ?? "",
   waveWebhookSecret: process.env.WAVE_WEBHOOK_SECRET ?? "",
+  weatherWebhookSecret: process.env.WEATHER_WEBHOOK_SECRET ?? "",
   csrIntakeWebhookUrl: process.env.CSR_INTAKE_WEBHOOK_URL ?? "https://global-node.thefvg.com/api/webhooks/csr-first-call-intake"
 };

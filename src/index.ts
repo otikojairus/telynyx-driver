@@ -770,6 +770,18 @@ const VENDOR_ACQUISITION_PIPELINE_MAP: Record<string, { categoryId: string; stag
 };
 
 const VENDOR_ACQUISITION_DEFAULT_PIPELINE = { categoryId: "26", stageId: "C26:NEW" };
+const DEAL_MATCH_API_URL = "https://global-node.thefvg.com/api/v1/deals/match";
+const DEAL_MATCH_BITRIX_FIELD = "UF_CRM_1780590038641";
+
+interface DealMatchParams {
+  country?: string;
+  provinceState?: string;
+  city?: string;
+  postalCode?: string;
+  issueNeed?: string;
+  vertical?: string;
+  dealType?: string;
+}
 
 function getVendorAcquisitionPipeline(serviceVertical: string): { categoryId: string; stageId: string } {
   const key = serviceVertical.toLowerCase().trim();
@@ -791,6 +803,107 @@ function formatMatchedVendors(vendors: Array<Record<string, unknown>>): string {
       return [`#${rank} ${name}`, phone, email].filter(Boolean).join(" | ");
     })
     .join("\n");
+}
+
+function compactDealMatchParams(params: DealMatchParams): DealMatchParams {
+  return Object.fromEntries(
+    Object.entries(params)
+      .map(([key, value]) => [key, String(value ?? "").trim()])
+      .filter(([, value]) => Boolean(value))
+  ) as DealMatchParams;
+}
+
+function buildDealMatchQuery(params: DealMatchParams): URLSearchParams {
+  const query = new URLSearchParams();
+
+  for (const key of ["country", "provinceState", "city", "postalCode", "issueNeed", "vertical", "dealType"] as const) {
+    const value = String(params[key] ?? "").trim();
+    if (value) {
+      query.set(key, value);
+    }
+  }
+
+  return query;
+}
+
+async function updateDealMatchesField(params: { dealId: string; matchParams: DealMatchParams }) {
+  const matchParams = compactDealMatchParams(params.matchParams);
+  const query = buildDealMatchQuery(matchParams);
+  const requestUrl = query.size ? `${DEAL_MATCH_API_URL}?${query.toString()}` : DEAL_MATCH_API_URL;
+  const response = await axios.get(requestUrl, {
+    headers: config.weatherWebhookSecret
+      ? { Authorization: `Bearer ${config.weatherWebhookSecret}` }
+      : undefined,
+    timeout: 15000
+  });
+  const matchData = (response.data as { data?: unknown })?.data ?? response.data;
+
+  await updateBitrixDealFields({
+    dealId: params.dealId,
+    fields: {
+      [DEAL_MATCH_BITRIX_FIELD]: JSON.stringify(matchData, null, 2)
+    }
+  });
+}
+
+function updateDealMatchesFieldNonBlocking(params: { dealId: string; matchParams: DealMatchParams; source: string }) {
+  void updateDealMatchesField(params)
+    .then(() => {
+      console.log(`Updated deal match field for deal ${params.dealId} from ${params.source}`);
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `Deal match lookup failed for deal ${params.dealId} from ${params.source}`,
+        err instanceof Error ? err.message : err
+      );
+    });
+}
+
+function buildDealMatchParamsFromCsrIntake(params: {
+  customerBasics?: {
+    city?: string;
+    country?: string;
+    provinceState?: string;
+    postalCode?: string;
+    serviceAddress?: string;
+  };
+  serviceRequest?: {
+    serviceCategory?: string[];
+    serviceTypes?: string[];
+    issueDescription?: string;
+  };
+}): DealMatchParams {
+  return compactDealMatchParams({
+    country: params.customerBasics?.country,
+    provinceState: params.customerBasics?.provinceState,
+    city: params.customerBasics?.city,
+    postalCode: params.customerBasics?.postalCode,
+    issueNeed: params.serviceRequest?.issueDescription || params.serviceRequest?.serviceTypes?.[0],
+    vertical: params.serviceRequest?.serviceCategory?.[0]
+  });
+}
+
+function buildDealMatchParamsFromBitrixDeal(params: {
+  deal: Record<string, unknown>;
+  serviceType: string;
+  postalCode: string;
+}): DealMatchParams {
+  const deal = params.deal;
+  const serviceCategoryStr = readAsStringArray(deal, ["UF_CRM_1780329708763"]);
+  const serviceCategoryEnum = resolveEnumId(BITRIX_SERVICE_CATEGORY_ENUM, deal["UF_CRM_1780330078905"]);
+  const serviceTypeResolved = resolveEnumId(BITRIX_SERVICE_TYPES_ENUM, deal["UF_CRM_1780330671084"]);
+
+  return compactDealMatchParams({
+    country: readFirstNonEmptyString(deal, ["UF_CRM_1780329497687", "ADDRESS_COUNTRY"]),
+    provinceState: readFirstNonEmptyString(deal, ["UF_CRM_1780329514570", "ADDRESS_PROVINCE", "ADDRESS_REGION"]),
+    city: readFirstNonEmptyString(deal, ["UF_CRM_1780329478655", "ADDRESS_CITY"]),
+    postalCode: params.postalCode || readFirstNonEmptyString(deal, ["UF_CRM_POSTAL_CODE", "ADDRESS_POSTAL_CODE", "POSTAL_CODE"]),
+    issueNeed: readFirstNonEmptyString(deal, ["UF_CRM_1780330710882", "COMMENTS", "DESCRIPTION"])
+      || serviceTypeResolved
+      || params.serviceType,
+    vertical: serviceCategoryStr[0] || serviceCategoryEnum || params.serviceType,
+    dealType: readFirstNonEmptyString(deal, ["TYPE_ID", "UF_CRM_DEAL_TYPE"])
+  });
 }
 
 function resolveEnumId(enumMap: Record<string, string>, raw: unknown): string {
@@ -1350,6 +1463,14 @@ app.post("/webhooks/inbound/bitrix/csr-intake", async (req: Request, res: Respon
   }
   if (dealResult.status === "rejected") {
     console.error("Bitrix deal creation failed", dealResult.reason);
+  }
+
+  if (dealId) {
+    updateDealMatchesFieldNonBlocking({
+      dealId: String(dealId),
+      matchParams: buildDealMatchParamsFromCsrIntake({ customerBasics, serviceRequest }),
+      source: "csr-intake"
+    });
   }
 
   if (webhookOk && dealId) {
@@ -2202,6 +2323,16 @@ app.post("/webhooks/bitrix/deals", async (req: Request, res: Response) => {
             urgency: csrUrgency
           }
         };
+
+        updateDealMatchesFieldNonBlocking({
+          dealId,
+          matchParams: buildDealMatchParamsFromBitrixDeal({
+            deal,
+            serviceType,
+            postalCode
+          }),
+          source: "bitrix-deal-create"
+        });
 
         axios.post(config.csrIntakeWebhookUrl, csrIntakePayload, {
           headers: { "Content-Type": "application/json" },
