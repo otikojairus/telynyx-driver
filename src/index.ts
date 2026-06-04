@@ -1186,8 +1186,7 @@ function buildDealMatchParamsFromBitrixDeal(params: {
     issueNeed: readFirstNonEmptyString(deal, ["UF_CRM_1780330710882", "COMMENTS", "DESCRIPTION"])
       || serviceTypeResolved
       || params.serviceType,
-    vertical: serviceCategoryStr[0] || serviceCategoryEnum || params.serviceType,
-    dealType: readFirstNonEmptyString(deal, ["TYPE_ID", "UF_CRM_DEAL_TYPE"])
+    vertical: serviceCategoryStr[0] || serviceCategoryEnum || params.serviceType
   });
 }
 
@@ -1864,7 +1863,20 @@ async function disableBitrixCallCardWidget(_req: Request, res: Response) {
   }
 }
 
-app.post("/bitrix/call-card/register", disableBitrixCallCardWidget);
+app.post("/bitrix/call-card/register", async (_req: Request, res: Response) => {
+  try {
+    const callCardWidgetBind = await bindBitrixCallCardWidget();
+    return res.status(200).json({
+      ok: true,
+      enabled: true,
+      message: "Custom CALL_CARD widget is enabled so the CSR Intake form appears in the call card.",
+      callCardWidgetBind
+    });
+  } catch (error) {
+    console.error("Failed to bind Bitrix call card widget", error);
+    return res.status(500).json({ ok: false, error: "Bitrix CALL_CARD widget bind failed" });
+  }
+});
 app.post("/bitrix/call-card/unregister", disableBitrixCallCardWidget);
 
 app.post("/bitrix/deals/register", async (_req: Request, res: Response) => {
