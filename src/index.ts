@@ -8,6 +8,7 @@ import {
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
   bindBitrixDealFundingWidget,
+  bindBitrixDealSmsWidget,
   bindBitrixLeadEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
@@ -36,6 +37,7 @@ import {
 import { initializeDatabase } from "./database";
 import {
   forwardTelnyxWebhookRecord,
+  listTelnyxSmsRecordsByPhone,
   listTelnyxWebhookRecords,
   saveTelnyxWebhookRecord,
   TelnyxWebhookRecord
@@ -1310,6 +1312,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
+    const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
@@ -1327,7 +1330,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -1362,6 +1365,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const leadEventBind = await bindBitrixLeadEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
+    const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
@@ -1370,7 +1374,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, callCardWidgetBind, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, callCardWidgetBind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -1431,6 +1435,93 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
       results: [],
       error: error instanceof Error ? error.message : "Funding matches could not be loaded."
     }));
+  }
+});
+
+app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
+  const placementOptions = parsePlacementOptions({
+    PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
+  });
+  const dealId = String(placementOptions.ID ?? "").trim();
+
+  function renderSmsHtml(params: { dealId: string; phone: string; messages: Array<{ direction: "inbound" | "outbound"; text: string; at: string }>; error?: string }): string {
+    const myNumber = config.telnyxFromNumber ?? "";
+    const rows = params.messages.map((m) => {
+      const isMine = m.direction === "outbound";
+      const time = new Date(m.at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return `<div class="msg ${isMine ? "out" : "in"}"><div class="bubble">${escapeHtml(m.text)}</div><div class="ts">${time}</div></div>`;
+    }).join("");
+
+    return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SMS History</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body { margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; background: #f6f8fb; color: #1a1a1a; }
+      .header { margin-bottom: 10px; }
+      .header h1 { font-size: 15px; margin: 0 0 2px; }
+      .header .sub { color: #667085; font-size: 12px; }
+      .thread { display: flex; flex-direction: column; gap: 6px; }
+      .msg { display: flex; flex-direction: column; max-width: 80%; }
+      .msg.out { align-self: flex-end; align-items: flex-end; }
+      .msg.in { align-self: flex-start; align-items: flex-start; }
+      .bubble { padding: 8px 11px; border-radius: 14px; line-height: 1.4; word-break: break-word; }
+      .out .bubble { background: #0b66ff; color: #fff; border-bottom-right-radius: 4px; }
+      .in .bubble { background: #fff; border: 1px solid #dfe5ef; border-bottom-left-radius: 4px; }
+      .ts { font-size: 10px; color: #99a0ad; margin-top: 2px; padding: 0 4px; }
+      .empty { color: #667085; font-size: 13px; padding: 8px 0; }
+      .error { color: #b42318; background: #fffbfa; border: 1px solid #fecdca; border-radius: 8px; padding: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>SMS History</h1>
+      <div class="sub">${params.phone ? `${escapeHtml(params.phone)} ↔ ${escapeHtml(myNumber)}` : `Deal ${escapeHtml(params.dealId)}`}</div>
+    </div>
+    ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
+    ${!params.error && params.messages.length ? `<div class="thread">${rows}</div>` : ""}
+    ${!params.error && !params.messages.length ? `<div class="empty">No SMS messages found for this contact.</div>` : ""}
+  </body>
+</html>`;
+  }
+
+  if (!dealId) {
+    return res.status(200).send(renderSmsHtml({ dealId: "unknown", phone: "", messages: [], error: "Missing deal ID from Bitrix placement context." }));
+  }
+
+  try {
+    const dealResponse = await getBitrixDealById(dealId);
+    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+    const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
+
+    let phone = "";
+    if (contactId) {
+      const contactResponse = await getBitrixContactById(contactId);
+      const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+      phone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
+    }
+
+    if (!phone) {
+      return res.status(200).send(renderSmsHtml({ dealId, phone: "", messages: [], error: "No phone number found on the contact linked to this deal." }));
+    }
+
+    const myNumber = config.telnyxFromNumber ?? "";
+    const records = await listTelnyxSmsRecordsByPhone(phone);
+    const messages = records
+      .filter((r) => r.text)
+      .map((r) => ({
+        direction: (r.from === phone ? "inbound" : "outbound") as "inbound" | "outbound",
+        text: r.text,
+        at: r.receivedAt
+      }));
+
+    return res.status(200).send(renderSmsHtml({ dealId, phone, messages }));
+  } catch (error) {
+    console.error("Failed to render SMS history widget", error);
+    return res.status(200).send(renderSmsHtml({ dealId, phone: "", messages: [], error: error instanceof Error ? error.message : "SMS history could not be loaded." }));
   }
 });
 

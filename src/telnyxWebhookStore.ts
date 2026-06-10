@@ -130,6 +130,35 @@ export async function saveTelnyxWebhookRecord(record: TelnyxWebhookRecord): Prom
   );
 }
 
+export async function listTelnyxSmsRecordsByPhone(phone: string, limit = 50): Promise<TelnyxWebhookRecord[]> {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
+  const rows = await queryDatabase<TelnyxWebhookRow>(
+    `
+      SELECT
+        id,
+        event_id,
+        event_type,
+        event_channel,
+        received_at,
+        phone_from,
+        phone_to,
+        text_body,
+        status,
+        raw_body,
+        bitrix,
+        outbound_forward
+      FROM telnyx_webhooks
+      WHERE event_channel = 'sms'
+        AND (phone_from = $1 OR phone_to = $1)
+      ORDER BY received_at ASC
+      LIMIT $2
+    `,
+    [phone, safeLimit]
+  );
+
+  return rows.map(mapRowToRecord);
+}
+
 export async function listTelnyxWebhookRecords(limit = 50): Promise<TelnyxWebhookRecord[]> {
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
   const rows = await queryDatabase<TelnyxWebhookRow>(
