@@ -151,6 +151,54 @@ TELNYX_CALL_FORWARD_WEBHOOK_URL=https://your-app.example.com/webhooks/telnyx-cal
 
 The middleware stores webhook records in the `telnyx_webhooks` Postgres table.
 
+## Balto Call Assist
+
+Balto can be started/stopped from the existing Telnyx call webhook path. When enabled, call events received at `/webhooks/telnyx` are stored as usual, then matching call lifecycle events trigger Balto's Start/Stop API.
+
+```text
+Telnyx connected/answered call event -> middleware -> Balto start
+Telnyx ended/hangup call event      -> middleware -> Balto stop
+Balto Call Data API                 -> middleware -> balto_call_sessions
+```
+
+Required Balto env vars:
+
+```text
+BALTO_ENABLED=true
+BALTO_ORG_ID=81729
+BALTO_AUTO_START_TOKEN=your_balto_auto_start_token
+BALTO_DATA_ACCESS_KEY=your_balto_data_access_key
+BALTO_INTEGRATION_NAME=telnyx_bitrix
+```
+
+Agent identity must be available on the Telnyx call event metadata, or configured as a fallback:
+
+```json
+{
+  "metadata": {
+    "agent_email": "agent@example.com",
+    "voip_campaign_name": "plumbing_urgent",
+    "bitrix_deal_id": "12345",
+    "bitrix_call_id": "abc123"
+  }
+}
+```
+
+If your Balto users are mapped by VoIP user ID instead of email, set:
+
+```text
+BALTO_IDENTIFIER_TYPE=voip_user_id
+```
+
+Tune the Telnyx lifecycle event names to match your actual call-control payloads:
+
+```text
+BALTO_START_EVENT_TYPES=call.answered,call.bridged
+BALTO_STOP_EVENT_TYPES=call.hangup,call.ended
+```
+
+The middleware persists Balto sessions and synced call output in the `balto_call_sessions` Postgres table.
+
 ## API Reference
 
 Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
@@ -184,6 +232,9 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 ### `POST /webhooks/telnyx`
 
 - Purpose: Receive inbound Telnyx webhooks (SMS/call events).
+- Balto:
+  - If `BALTO_ENABLED=true`, configured call start/stop event types call Balto's Start/Stop API.
+  - Call metadata should include an agent email or VoIP user ID, unless a fallback env var is configured.
 - Auth:
   - If `TELNYX_SIGNATURE_SECRET` is set, requires headers:
     - `telnyx-signature-ed25519`
@@ -411,6 +462,29 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
   - `limit` (optional, default `50`)
 - Response: `{ ok, records }`.
 
+### `GET /debug/balto/call-sessions`
+
+- Purpose: Read recent Balto start/stop sessions and synced call outputs.
+- Auth: None.
+- Query params:
+  - `limit` (optional, default `50`)
+- Response: `{ ok, records }`.
+
+### `POST /debug/balto/call-data/sync`
+
+- Purpose: Pull Balto Call Data API records for a date range and upsert them into `balto_call_sessions`.
+- Auth: honors `x-thirdparty-secret` and `x-inbound-secret` when configured.
+- Request:
+
+```json
+{
+  "startDate": "2026-06-09",
+  "endDate": "2026-06-09"
+}
+```
+
+- Response: `{ ok, startDate, endDate, synced }`.
+
 ### `GET /debug/bitrix/deal-events`
 
 - Purpose: Read recent in-memory deal webhook events.
@@ -475,6 +549,13 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 
 - `TELNYX_FORWARD_WEBHOOK_URL`: Forwards stored inbound Telnyx SMS webhooks to your endpoint.
 - `TELNYX_CALL_FORWARD_WEBHOOK_URL`: Forwards stored Telnyx call webhooks to your endpoint.
+- `BALTO_ENABLED`: Enables Balto start/stop handling for Telnyx call events.
+- `BALTO_ORG_ID`: Balto Cloud organization ID used by the Call Data API.
+- `BALTO_AUTO_START_TOKEN`: Balto Start/Stop API token.
+- `BALTO_DATA_ACCESS_KEY`: Balto Call Data API key.
+- `BALTO_IDENTIFIER_TYPE`: `email` or `voip_user_id`; controls which Balto Start/Stop endpoint is used.
+- `BALTO_DEFAULT_AGENT_EMAIL` / `BALTO_DEFAULT_VOIP_USER_ID`: Optional fallback agent identity.
+- `BALTO_START_EVENT_TYPES` / `BALTO_STOP_EVENT_TYPES`: Comma-separated Telnyx event names that trigger Balto start/stop.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
 - `BITRIX_DEAL_CLIENT_PRICE_FIELD` (optional): Bitrix deal field code where final client-facing price is stored.
 - `BITRIX_DEAL_DEPOSIT_LINK_FIELD` (optional): Bitrix deal field code where deposit payment link is stored.

@@ -101,6 +101,63 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_bitrix_deals_deal_id
     ON bitrix_deals (deal_id)
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS balto_call_sessions (
+      id TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status TEXT NOT NULL,
+      telnyx_event_id TEXT,
+      telnyx_call_control_id TEXT,
+      telnyx_call_leg_id TEXT,
+      bitrix_call_id TEXT,
+      bitrix_deal_id TEXT,
+      agent_email TEXT,
+      voip_user_id TEXT,
+      phone_number TEXT,
+      direction TEXT,
+      voip_call_id TEXT NOT NULL,
+      voip_customer_id TEXT,
+      voip_campaign_name TEXT,
+      start_requested_at TIMESTAMPTZ,
+      stop_requested_at TIMESTAMPTZ,
+      start_response JSONB,
+      stop_response JSONB,
+      balto_call_id TEXT,
+      balto_output JSONB,
+      output_hash TEXT,
+      last_error TEXT,
+      raw_start_event JSONB,
+      raw_stop_event JSONB
+    )
+  `);
+
+  await pool.query(`
+    ALTER TABLE balto_call_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  `);
+  await pool.query(`
+    ALTER TABLE balto_call_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  `);
+  await pool.query(`
+    ALTER TABLE balto_call_sessions ADD COLUMN IF NOT EXISTS balto_call_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE balto_call_sessions ADD COLUMN IF NOT EXISTS balto_output JSONB
+  `);
+  await pool.query(`
+    ALTER TABLE balto_call_sessions ADD COLUMN IF NOT EXISTS output_hash TEXT
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_balto_call_sessions_voip_call_id
+    ON balto_call_sessions (voip_call_id)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_balto_call_sessions_status
+    ON balto_call_sessions (status)
+  `);
 }
 
 export async function queryDatabase<T extends QueryResultRow = QueryResultRow>(

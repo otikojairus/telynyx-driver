@@ -47,6 +47,13 @@ import { canSendEmail, sendLeadConfirmationEmail } from "./notifications";
 import { writeBitrixTokens } from "./tokenStore";
 import { BitrixDealEvent, BitrixInstallRequest, BitrixLeadEvent, BitrixOutboundEvent, TelnyxWebhook } from "./types";
 import { createWavePaymentLink } from "./wave";
+import { startBaltoCall, stopBaltoCall, syncBaltoCallData } from "./balto";
+import {
+  getBaltoCallSessionByVoipCallId,
+  listBaltoCallSessions,
+  upsertBaltoCallDataRecord,
+  upsertBaltoCallSession
+} from "./baltoCallStore";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -277,6 +284,307 @@ function getTelnyxEventChannel(eventType: string): TelnyxWebhookRecord["eventCha
 function isTruthyCallState(state: string, matches: string[]) {
   const normalized = state.trim().toLowerCase();
   return matches.some((item) => normalized === item);
+}
+
+type TelnyxCallPayload = NonNullable<NonNullable<TelnyxWebhook["data"]>["payload"]>;
+
+function parseCsvSet(value: string): Set<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function readStringFromRecord(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function readTelnyxCallMetadata(payload: TelnyxCallPayload | undefined): Record<string, unknown> {
+  const metadata = payload?.metadata;
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
+}
+
+function resolveBaltoAgentIdentifier(metadata: Record<string, unknown>) {
+  const email = (
+    readStringFromRecord(metadata, [
+      "email",
+      "agent_email",
+      "agentEmail",
+      "user_email",
+      "userEmail",
+      "bitrix_user_email",
+      "bitrixUserEmail"
+    ]) || config.baltoDefaultAgentEmail
+  ).trim();
+
+  const voipUserId = (
+    readStringFromRecord(metadata, [
+      "voip_user_id",
+      "voipUserId",
+      "agent_id",
+      "agentId",
+      "user_id",
+      "userId",
+      "bitrix_user_id",
+      "bitrixUserId"
+    ]) || config.baltoDefaultVoipUserId
+  ).trim();
+
+  if (config.baltoIdentifierType.toLowerCase() === "voip_user_id") {
+    return { email: "", voipUserId };
+  }
+
+  return { email, voipUserId };
+}
+
+function resolveBaltoCustomerPhone(payload: TelnyxCallPayload | undefined, direction: string): string {
+  const from = readTelnyxPhone(payload?.from);
+  const to = readTelnyxPhone(payload?.to);
+  const normalizedDirection = direction.trim().toLowerCase();
+  if (normalizedDirection === "outbound") {
+    return to || from;
+  }
+  return from || to;
+}
+
+function buildBaltoCallContext(body: TelnyxWebhook, record: TelnyxWebhookRecord) {
+  const payload = body.data?.payload;
+  const metadata = readTelnyxCallMetadata(payload);
+  const direction = readStringFromRecord(metadata, ["direction"]) || String(payload?.direction ?? "").trim();
+  const phoneNumber = resolveBaltoCustomerPhone(payload, direction);
+  const callControlId = String(payload?.call_control_id ?? "").trim();
+  const callLegId = String(payload?.call_leg_id ?? "").trim();
+  const voipCallId =
+    readStringFromRecord(metadata, ["voip_call_id", "voipCallId", "call_id", "callId"]) ||
+    callControlId ||
+    callLegId ||
+    record.eventId ||
+    record.id;
+  const bitrixCallId = readStringFromRecord(metadata, ["bitrix_call_id", "bitrixCallId", "CALL_ID"]);
+  const bitrixDealId = readStringFromRecord(metadata, ["bitrix_deal_id", "bitrixDealId", "deal_id", "dealId"]);
+  const voipCustomerId =
+    readStringFromRecord(metadata, ["voip_customer_id", "voipCustomerId", "customer_id", "customerId"]) ||
+    phoneNumber;
+  const voipCampaignName =
+    readStringFromRecord(metadata, [
+      "voip_campaign_name",
+      "voipCampaignName",
+      "campaign",
+      "campaign_name",
+      "queue",
+      "skill",
+      "service_type",
+      "serviceType",
+      "pipeline",
+      "line"
+    ]) ||
+    direction ||
+    "telnyx_call";
+  const { email, voipUserId } = resolveBaltoAgentIdentifier(metadata);
+
+  return {
+    sessionId: `balto-${voipCallId}`,
+    telnyxEventId: record.eventId || record.id,
+    telnyxCallControlId: callControlId,
+    telnyxCallLegId: callLegId,
+    bitrixCallId,
+    bitrixDealId,
+    agentEmail: email,
+    voipUserId,
+    phoneNumber,
+    direction,
+    voipCallId,
+    voipCustomerId,
+    voipCampaignName,
+    metadata
+  };
+}
+
+async function handleBaltoTelnyxCallEvent(body: TelnyxWebhook, record: TelnyxWebhookRecord) {
+  if (!config.baltoEnabled) {
+    return { enabled: false };
+  }
+
+  const eventType = String(body.data?.event_type ?? "").toLowerCase();
+  const startEventTypes = parseCsvSet(config.baltoStartEventTypes);
+  const stopEventTypes = parseCsvSet(config.baltoStopEventTypes);
+  const shouldStart = startEventTypes.has(eventType);
+  const shouldStop = stopEventTypes.has(eventType);
+
+  if (!shouldStart && !shouldStop) {
+    return { enabled: true, action: "ignored", eventType };
+  }
+
+  const context = buildBaltoCallContext(body, record);
+  const existing = await getBaltoCallSessionByVoipCallId(context.voipCallId);
+  const identifier = context.agentEmail
+    ? { email: context.agentEmail }
+    : context.voipUserId
+      ? { voip_user_id: context.voipUserId }
+      : existing?.agentEmail
+        ? { email: existing.agentEmail }
+        : existing?.voipUserId
+          ? { voip_user_id: existing.voipUserId }
+          : {};
+
+  if (!("email" in identifier) && !("voip_user_id" in identifier)) {
+    await upsertBaltoCallSession({
+      id: context.sessionId,
+      status: shouldStart ? "start_failed" : "stop_failed",
+      telnyxEventId: context.telnyxEventId,
+      telnyxCallControlId: context.telnyxCallControlId,
+      telnyxCallLegId: context.telnyxCallLegId,
+      bitrixCallId: context.bitrixCallId,
+      bitrixDealId: context.bitrixDealId,
+      phoneNumber: context.phoneNumber,
+      direction: context.direction,
+      voipCallId: context.voipCallId,
+      voipCustomerId: context.voipCustomerId,
+      voipCampaignName: context.voipCampaignName,
+      lastError: "Missing Balto agent email or voip_user_id. Provide metadata or BALTO_DEFAULT_AGENT_EMAIL/BALTO_DEFAULT_VOIP_USER_ID.",
+      rawStartEvent: shouldStart ? body : undefined,
+      rawStopEvent: shouldStop ? body : undefined
+    });
+    return {
+      enabled: true,
+      action: shouldStart ? "start_failed" : "stop_failed",
+      error: "missing_agent_identifier",
+      voipCallId: context.voipCallId
+    };
+  }
+
+  if (shouldStart) {
+    if (existing?.startRequestedAt && existing.status !== "start_failed") {
+      return { enabled: true, action: "start_duplicate", voipCallId: context.voipCallId };
+    }
+
+    try {
+      const response = await startBaltoCall({
+        ...identifier,
+        voip_call_id: context.voipCallId,
+        voip_customer_id: context.voipCustomerId,
+        voip_campaign_name: context.voipCampaignName,
+        direction: context.direction || undefined,
+        integration: config.baltoIntegrationName,
+        timestamp: body.data?.occurred_at ?? new Date().toISOString(),
+        voip_metadata: {
+          bitrix_call_id: context.bitrixCallId || undefined,
+          bitrix_deal_id: context.bitrixDealId || undefined,
+          telnyx_call_control_id: context.telnyxCallControlId || undefined,
+          telnyx_call_leg_id: context.telnyxCallLegId || undefined,
+          phone_number: context.phoneNumber || undefined,
+          ...context.metadata
+        }
+      });
+      await upsertBaltoCallSession({
+        id: context.sessionId,
+        status: "started",
+        telnyxEventId: context.telnyxEventId,
+        telnyxCallControlId: context.telnyxCallControlId,
+        telnyxCallLegId: context.telnyxCallLegId,
+        bitrixCallId: context.bitrixCallId,
+        bitrixDealId: context.bitrixDealId,
+        agentEmail: context.agentEmail || existing?.agentEmail,
+        voipUserId: context.voipUserId || existing?.voipUserId,
+        phoneNumber: context.phoneNumber,
+        direction: context.direction,
+        voipCallId: context.voipCallId,
+        voipCustomerId: context.voipCustomerId,
+        voipCampaignName: context.voipCampaignName,
+        startRequestedAt: new Date().toISOString(),
+        startResponse: response,
+        rawStartEvent: body
+      });
+      return { enabled: true, action: "started", voipCallId: context.voipCallId };
+    } catch (error) {
+      await upsertBaltoCallSession({
+        id: context.sessionId,
+        status: "start_failed",
+        telnyxEventId: context.telnyxEventId,
+        telnyxCallControlId: context.telnyxCallControlId,
+        telnyxCallLegId: context.telnyxCallLegId,
+        bitrixCallId: context.bitrixCallId,
+        bitrixDealId: context.bitrixDealId,
+        agentEmail: context.agentEmail || existing?.agentEmail,
+        voipUserId: context.voipUserId || existing?.voipUserId,
+        phoneNumber: context.phoneNumber,
+        direction: context.direction,
+        voipCallId: context.voipCallId,
+        voipCustomerId: context.voipCustomerId,
+        voipCampaignName: context.voipCampaignName,
+        lastError: error instanceof Error ? error.message : "Balto start failed",
+        rawStartEvent: body
+      });
+      return { enabled: true, action: "start_failed", voipCallId: context.voipCallId };
+    }
+  }
+
+  if (existing?.stopRequestedAt && existing.status !== "stop_failed") {
+    return { enabled: true, action: "stop_duplicate", voipCallId: context.voipCallId };
+  }
+
+  try {
+    const response = await stopBaltoCall({
+      ...identifier,
+      voip_call_id: context.voipCallId,
+      voip_customer_id: context.voipCustomerId || existing?.voipCustomerId,
+      voip_campaign_name: context.voipCampaignName || existing?.voipCampaignName,
+      direction: context.direction || existing?.direction,
+      integration: config.baltoIntegrationName,
+      timestamp: body.data?.occurred_at ?? new Date().toISOString()
+    });
+    await upsertBaltoCallSession({
+      id: existing?.id ?? context.sessionId,
+      status: "stopped",
+      telnyxEventId: context.telnyxEventId,
+      telnyxCallControlId: context.telnyxCallControlId,
+      telnyxCallLegId: context.telnyxCallLegId,
+      bitrixCallId: context.bitrixCallId,
+      bitrixDealId: context.bitrixDealId,
+      agentEmail: context.agentEmail || existing?.agentEmail,
+      voipUserId: context.voipUserId || existing?.voipUserId,
+      phoneNumber: context.phoneNumber || existing?.phoneNumber,
+      direction: context.direction || existing?.direction,
+      voipCallId: context.voipCallId,
+      voipCustomerId: context.voipCustomerId || existing?.voipCustomerId,
+      voipCampaignName: context.voipCampaignName || existing?.voipCampaignName,
+      stopRequestedAt: new Date().toISOString(),
+      stopResponse: response,
+      rawStopEvent: body
+    });
+    return { enabled: true, action: "stopped", voipCallId: context.voipCallId };
+  } catch (error) {
+    await upsertBaltoCallSession({
+      id: existing?.id ?? context.sessionId,
+      status: "stop_failed",
+      telnyxEventId: context.telnyxEventId,
+      telnyxCallControlId: context.telnyxCallControlId,
+      telnyxCallLegId: context.telnyxCallLegId,
+      bitrixCallId: context.bitrixCallId,
+      bitrixDealId: context.bitrixDealId,
+      agentEmail: context.agentEmail || existing?.agentEmail,
+      voipUserId: context.voipUserId || existing?.voipUserId,
+      phoneNumber: context.phoneNumber || existing?.phoneNumber,
+      direction: context.direction || existing?.direction,
+      voipCallId: context.voipCallId,
+      voipCustomerId: context.voipCustomerId || existing?.voipCustomerId,
+      voipCampaignName: context.voipCampaignName || existing?.voipCampaignName,
+      lastError: error instanceof Error ? error.message : "Balto stop failed",
+      rawStopEvent: body
+    });
+    return { enabled: true, action: "stop_failed", voipCallId: context.voipCallId };
+  }
 }
 
 function createTelnyxWebhookRecord(body: TelnyxWebhook | Record<string, unknown>): TelnyxWebhookRecord {
@@ -2148,6 +2456,43 @@ app.get("/debug/telnyx/webhooks", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/debug/balto/call-sessions", async (req: Request, res: Response) => {
+  const rawLimit = Number(req.query.limit ?? 50);
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
+  try {
+    return res.status(200).json({ ok: true, records: await listBaltoCallSessions(limit) });
+  } catch (error) {
+    console.error("Failed to read Balto call sessions", error);
+    return res.status(500).json({ ok: false, error: "Balto call session lookup failed" });
+  }
+});
+
+app.post("/debug/balto/call-data/sync", async (req: Request, res: Response) => {
+  if (!verifyThirdPartyWebhookSecret(req) || !verifyInboundDealSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid sync secret" });
+  }
+
+  const body = req.body as { startDate?: string; endDate?: string };
+  const today = new Date().toISOString().slice(0, 10);
+  const startDate = String(body.startDate ?? today).trim();
+  const endDate = String(body.endDate ?? startDate).trim();
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    return res.status(400).json({ ok: false, error: "startDate and endDate must use YYYY-MM-DD format" });
+  }
+
+  try {
+    const records = await syncBaltoCallData({ startDate, endDate });
+    for (const record of records) {
+      await upsertBaltoCallDataRecord(record);
+    }
+    return res.status(200).json({ ok: true, startDate, endDate, synced: records.length });
+  } catch (error) {
+    console.error("Failed to sync Balto call data", error);
+    return res.status(500).json({ ok: false, error: "Balto call data sync failed" });
+  }
+});
+
 app.get("/debug/bitrix/deal-events", (_req: Request, res: Response) => {
   return res.status(200).json({ ok: true, events: recentBitrixDealEvents });
 });
@@ -2388,6 +2733,7 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   if (record.eventChannel === "call") {
     record.status = "stored_call_event";
     await persistTelnyxWebhookRecord(record);
+    const balto = await handleBaltoTelnyxCallEvent(body, record);
 
     if (record.outboundForward?.enabled) {
       record.status = record.outboundForward.delivered ? "forwarded_call_event" : "call_forward_failed";
@@ -2397,7 +2743,8 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
     return res.status(200).json({
       ok: true,
       callEvent: true,
-      forwarded: Boolean(record.outboundForward?.enabled && record.outboundForward.delivered)
+      forwarded: Boolean(record.outboundForward?.enabled && record.outboundForward.delivered),
+      balto
     });
   }
 
