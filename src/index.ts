@@ -7,6 +7,7 @@ import {
   activateBitrixConnector,
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
+  bindBitrixDealCardDatesWidget,
   bindBitrixDealFundingWidget,
   bindBitrixDealSmsWidget,
   bindBitrixLeadEvents,
@@ -1313,6 +1314,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
     const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
+    const dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
@@ -1330,7 +1332,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -1366,6 +1368,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
     const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
+    const dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
     let appInstall: unknown;
@@ -1374,7 +1377,7 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
     } catch (e) {
       appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, callCardWidgetBind, status, appInstall });
+    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall });
   } catch (error) {
     console.error("Failed to register Bitrix connector", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
@@ -1435,6 +1438,94 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
       results: [],
       error: error instanceof Error ? error.message : "Funding matches could not be loaded."
     }));
+  }
+});
+
+const stageColorCache = new Map<string, string>();
+
+async function getStageColor(stageId: string): Promise<string> {
+  if (stageColorCache.has(stageId)) {
+    return stageColorCache.get(stageId)!;
+  }
+
+  // stageId format: "C{categoryId}:{statusId}" for pipelines, or plain "{statusId}" for default
+  const pipelineMatch = stageId.match(/^C(\d+):(.+)$/i);
+  const entityId = pipelineMatch ? `DEAL_STAGE_${pipelineMatch[1]}` : "DEAL_STAGE";
+  const statusId = pipelineMatch ? pipelineMatch[2] : stageId;
+
+  try {
+    const response = await listBitrixStatuses({ ENTITY_ID: entityId, STATUS_ID: statusId });
+    const statuses = response.result ?? [];
+    const color = String((statuses[0] as Record<string, unknown>)?.COLOR ?? "").trim();
+    const resolved = color ? (color.startsWith("#") ? color : `#${color}`) : "#b0bec5";
+    stageColorCache.set(stageId, resolved);
+    if (stageColorCache.size > 500) {
+      stageColorCache.delete(stageColorCache.keys().next().value!);
+    }
+    return resolved;
+  } catch {
+    return "#b0bec5";
+  }
+}
+
+app.all("/bitrix/widgets/deal-card-dates", async (req: Request, res: Response) => {
+  const placementOptions = parsePlacementOptions({
+    PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
+  });
+  const dealId = String(placementOptions.ID ?? "").trim();
+
+  if (!dealId) {
+    return res.status(200).send(`<div style="font-family:sans-serif;font-size:11px;color:#999;padding:2px 0;">No deal ID</div>`);
+  }
+
+  try {
+    const dealResponse = await getBitrixDealById(dealId);
+    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+    const stageId = String(deal.STAGE_ID ?? "").trim();
+
+    function formatDate(value: unknown): string {
+      if (!value || value === "0000-00-00T00:00:00+00:00" || value === "0001-01-01T00:00:00+00:00") {
+        return "—";
+      }
+      const d = new Date(String(value));
+      if (isNaN(d.getTime())) return "—";
+      return d.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+    }
+
+    const [startDate, endDate, stageColor] = await Promise.all([
+      Promise.resolve(formatDate(deal.BEGINDATE)),
+      Promise.resolve(formatDate(deal.CLOSEDATE)),
+      stageId ? getStageColor(stageId) : Promise.resolve("#b0bec5")
+    ]);
+
+    const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; color: #344054; background: transparent; }
+      .accent { height: 3px; width: 100%; background: ${escapeHtml(stageColor)}; border-radius: 2px 2px 0 0; margin-bottom: 5px; }
+      .row { display: flex; align-items: center; gap: 6px; line-height: 1.4; padding: 0 0 3px; }
+      .label { color: #98a2b3; min-width: 32px; }
+      .val { color: #101828; font-weight: 500; }
+      .sep { color: #d0d5dd; margin: 0 2px; }
+    </style>
+  </head>
+  <body>
+    <div class="accent"></div>
+    <div class="row">
+      <span class="label">Start</span><span class="val">${escapeHtml(startDate)}</span>
+      <span class="sep">·</span>
+      <span class="label">End</span><span class="val">${escapeHtml(endDate)}</span>
+    </div>
+  </body>
+</html>`;
+
+    return res.status(200).send(html);
+  } catch (error) {
+    console.error("Failed to render deal card dates widget", error);
+    return res.status(200).send(`<div style="font-family:sans-serif;font-size:11px;color:#b42318;padding:2px 0;">Could not load dates</div>`);
   }
 });
 
