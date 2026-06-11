@@ -458,6 +458,10 @@ export async function listBitrixStatuses(filter: Record<string, unknown>) {
   });
 }
 
+export async function getBitrixUserById(userId: string) {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("user.get", { ID: userId });
+}
+
 export async function findBitrixUserByEmail(email: string) {
   return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("user.get", {
     FILTER: {

@@ -33,7 +33,8 @@ import {
   createBitrixDeal,
   unbindBitrixCallCardWidget,
   updateBitrixDealFields,
-  updateBitrixDealStage
+  updateBitrixDealStage,
+  getBitrixUserById
 } from "./clients";
 import { initializeDatabase } from "./database";
 import {
@@ -72,6 +73,9 @@ const processedQuotePresentedPaymentTriggers = new Set<string>();
 const processedDealCreateNotifications = new Set<string>();
 const phoneByChatId = new Map<string, string>();
 const phoneByUserId = new Map<string, string>();
+// Maps customer phone number → agent email, populated when the Bitrix call card widget opens.
+// Used to resolve the answering agent for Balto when Telnyx call.answered fires.
+const callAgentByPhone = new Map<string, { agentEmail: string; bitrixCallId: string; storedAt: number }>();
 const thirdPartyReplyRouteByPhone = new Map<string, { webhookUrl: string; deliverSmsReplies: boolean }>();
 let lastBitrixSession: { sessionId?: string | number; chatId?: string | number } = {};
 const recentBitrixReplyWebhooks: Array<{
@@ -391,14 +395,16 @@ function buildBaltoCallContext(body: TelnyxWebhook, record: TelnyxWebhookRecord)
     ]) ||
     direction ||
     "telnyx_call";
-  const { email, voipUserId } = resolveBaltoAgentIdentifier(metadata);
+  const { email: metaEmail, voipUserId } = resolveBaltoAgentIdentifier(metadata);
+  // If metadata had no agent email, check the call card map populated when Bitrix opened the widget.
+  const email = metaEmail || (phoneNumber ? callAgentByPhone.get(phoneNumber)?.agentEmail ?? "" : "");
 
   return {
     sessionId: `balto-${voipCallId}`,
     telnyxEventId: record.eventId || record.id,
     telnyxCallControlId: callControlId,
     telnyxCallLegId: callLegId,
-    bitrixCallId,
+    bitrixCallId: bitrixCallId || (phoneNumber ? callAgentByPhone.get(phoneNumber)?.bitrixCallId ?? "" : ""),
     bitrixDealId,
     agentEmail: email,
     voipUserId,
@@ -2024,12 +2030,29 @@ app.all("/bitrix/widgets/call-card", (req: Request, res: Response) => {
 
   let phoneNumber = "";
   let callId = "";
+  let userId = "";
   try {
     const opts = JSON.parse(placementOptionsRaw) as Record<string, unknown>;
     phoneNumber = String(opts.PHONE_NUMBER ?? "").trim();
     callId = String(opts.CALL_ID ?? "").trim();
+    userId = String(opts.USER_ID ?? "").trim();
   } catch {
     // ignore parse errors
+  }
+
+  // When Bitrix opens the call card for an agent, look up their email and cache it by customer
+  // phone number so Balto can identify the correct agent when call.answered fires from Telnyx.
+  if (config.baltoEnabled && userId && phoneNumber) {
+    getBitrixUserById(userId)
+      .then(response => {
+        const user = Array.isArray(response.result) ? response.result[0] : undefined;
+        const email = String(user?.EMAIL ?? user?.email ?? "").trim();
+        if (email) {
+          callAgentByPhone.set(phoneNumber, { agentEmail: email, bitrixCallId: callId, storedAt: Date.now() });
+          trimMap(callAgentByPhone);
+        }
+      })
+      .catch((err: unknown) => console.warn("Failed to resolve Bitrix agent email for call card", { userId, phoneNumber, err }));
   }
 
   const inboundSecret = config.inboundDealWebhookSecret;
