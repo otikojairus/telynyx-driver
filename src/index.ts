@@ -1840,29 +1840,73 @@ app.get("/bitrix/connector/settings", (_req, res) => {
   `);
 });
 
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Unknown error";
+}
+
 app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
+  let step = "start";
+  const result: Record<string, unknown> = {};
+
   try {
-    const register = await registerBitrixConnector();
-    const activate = await activateBitrixConnector();
-    const eventBind = await bindBitrixConnectorEvents();
-    const dealEventBind = await bindBitrixDealEvents();
-    const leadEventBind = await bindBitrixLeadEvents();
-    const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
-    const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
-    const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
-    const dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
-    const callCardWidgetBind = await bindBitrixCallCardWidget();
-    const status = await getBitrixConnectorStatus();
+    step = "imconnector.register";
+    result.register = await registerBitrixConnector();
+
+    step = "imconnector.activate";
+    result.activate = await activateBitrixConnector();
+
+    step = "event.bind:OnImConnectorMessageAdd";
+    result.eventBind = await bindBitrixConnectorEvents();
+
+    step = "event.bind:deal";
+    result.dealEventBind = await bindBitrixDealEvents();
+
+    step = "event.bind:lead";
+    result.leadEventBind = await bindBitrixLeadEvents();
+
+    step = "placement.bind:deal-payment";
+    result.dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
+
+    step = "placement.bind:deal-funding";
+    result.dealFundingWidgetBind = await bindBitrixDealFundingWidget();
+
+    step = "placement.bind:deal-sms";
+    result.dealSmsWidgetBind = await bindBitrixDealSmsWidget();
+
+    step = "placement.bind:deal-card-dates";
+    result.dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
+
+    step = "placement.bind:call-card";
+    result.callCardWidgetBind = await bindBitrixCallCardWidget();
+
+    step = "imconnector.status";
+    result.status = await getBitrixConnectorStatus();
+
+    step = "app.install";
     let appInstall: unknown;
     try {
       appInstall = await markBitrixAppInstalled();
     } catch (e) {
-      appInstall = { error: e instanceof Error ? e.message : "app.install failed" };
+      appInstall = { error: formatErrorMessage(e) };
     }
-    return res.status(200).json({ ok: true, register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall });
+    result.appInstall = appInstall;
+
+    return res.status(200).json({ ok: true, ...result });
   } catch (error) {
-    console.error("Failed to register Bitrix connector", error);
-    return res.status(500).json({ ok: false, error: "Bitrix connector registration failed" });
+    console.error("Failed to register Bitrix connector", {
+      failedStep: step,
+      error: formatErrorMessage(error)
+    });
+    return res.status(500).json({
+      ok: false,
+      error: "Bitrix connector registration failed",
+      failedStep: step,
+      detail: formatErrorMessage(error),
+      partial: result
+    });
   }
 });
 

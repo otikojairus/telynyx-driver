@@ -90,6 +90,7 @@ export async function callBitrixMethod<T = unknown>(method: string, payload: Rec
       },
       {
         timeout: 15000,
+        validateStatus: () => true,
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json"
@@ -101,6 +102,9 @@ export async function callBitrixMethod<T = unknown>(method: string, payload: Rec
       throw new Error(
         `Bitrix error: ${response.data.error} ${response.data.error_description ?? ""}`
       );
+    }
+    if (response.status >= 400) {
+      throw new Error(`Bitrix HTTP ${response.status}: ${JSON.stringify(response.data)}`);
     }
 
     return response.data;
@@ -294,18 +298,28 @@ export async function bindBitrixDealCardDatesWidget() {
     HANDLER: handler
   }).catch(() => null);
 
-  const bind = await callBitrixMethod("placement.bind", {
-    PLACEMENT: placement,
-    HANDLER: handler,
-    TITLE: "Dates"
-  });
+  try {
+    const bind = await callBitrixMethod("placement.bind", {
+      PLACEMENT: placement,
+      HANDLER: handler,
+      TITLE: "Dates"
+    });
 
-  return {
-    ok: true,
-    placement,
-    handler,
-    bind
-  };
+    return {
+      ok: true,
+      placement,
+      handler,
+      bind
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      placement,
+      handler,
+      optional: true,
+      error: error instanceof Error ? error.message : "Placement bind failed"
+    };
+  }
 }
 
 export async function bindBitrixDealSmsWidget() {
@@ -391,18 +405,28 @@ export async function bindBitrixCallCardWidget() {
     HANDLER: handler
   }).catch(() => null);
 
-  const bind = await callBitrixMethod("placement.bind", {
-    PLACEMENT: placement,
-    HANDLER: handler,
-    TITLE: "CSR Intake"
-  });
+  try {
+    const bind = await callBitrixMethod("placement.bind", {
+      PLACEMENT: placement,
+      HANDLER: handler,
+      TITLE: "CSR Intake"
+    });
 
-  return {
-    ok: true,
-    placement,
-    handler,
-    bind
-  };
+    return {
+      ok: true,
+      placement,
+      handler,
+      bind
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      placement,
+      handler,
+      optional: true,
+      error: error instanceof Error ? error.message : "Placement bind failed"
+    };
+  }
 }
 
 export async function createBitrixDeal(fields: Record<string, unknown>) {
