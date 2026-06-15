@@ -196,6 +196,36 @@ export async function getBaltoCallSessionByVoipCallId(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+export async function getBaltoCallSessionByTelnyxIds(params: {
+  voipCallId?: string;
+  callControlId?: string;
+  callLegId?: string;
+}): Promise<BaltoCallSessionRecord | null> {
+  const ids = [
+    String(params.voipCallId ?? "").trim(),
+    String(params.callControlId ?? "").trim(),
+    String(params.callLegId ?? "").trim()
+  ].filter(Boolean);
+
+  if (!ids.length) {
+    return null;
+  }
+
+  const rows = await queryDatabase<BaltoCallSessionRow>(
+    `
+      SELECT *
+      FROM balto_call_sessions
+      WHERE voip_call_id = ANY($1::text[])
+        OR telnyx_call_control_id = ANY($1::text[])
+        OR telnyx_call_leg_id = ANY($1::text[])
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+    [ids]
+  );
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
 export async function listBaltoCallSessions(limit = 50): Promise<BaltoCallSessionRecord[]> {
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 50;
   const rows = await queryDatabase<BaltoCallSessionRow>(

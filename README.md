@@ -193,8 +193,8 @@ BALTO_IDENTIFIER_TYPE=voip_user_id
 Tune the Telnyx lifecycle event names to match your actual call-control payloads:
 
 ```text
-BALTO_START_EVENT_TYPES=call.answered,call.bridged
-BALTO_STOP_EVENT_TYPES=call.hangup,call.ended
+BALTO_START_EVENT_TYPES=call.answered
+BALTO_STOP_EVENT_TYPES=call.hangup,call.ended,call.rejected,call.declined,call.canceled,call.cancelled,call.failed,call.busy,call.no_answer
 ```
 
 The middleware persists Balto sessions and synced call output in the `balto_call_sessions` Postgres table.
@@ -555,7 +555,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `BALTO_DATA_ACCESS_KEY`: Balto Call Data API key.
 - `BALTO_IDENTIFIER_TYPE`: `email` or `voip_user_id`; controls which Balto Start/Stop endpoint is used.
 - `BALTO_DEFAULT_AGENT_EMAIL` / `BALTO_DEFAULT_VOIP_USER_ID`: Optional fallback agent identity.
-- `BALTO_START_EVENT_TYPES` / `BALTO_STOP_EVENT_TYPES`: Comma-separated Telnyx event names that trigger Balto start/stop.
+- `BALTO_START_EVENT_TYPES` / `BALTO_STOP_EVENT_TYPES`: Comma-separated Telnyx event names that trigger Balto start/stop. Balto start is still guarded so ringing/initiated events cannot start a desktop call.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
 - `BITRIX_DEAL_CLIENT_PRICE_FIELD` (optional): Bitrix deal field code where final client-facing price is stored.
 - `BITRIX_DEAL_DEPOSIT_LINK_FIELD` (optional): Bitrix deal field code where deposit payment link is stored.

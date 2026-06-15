@@ -50,7 +50,7 @@ import { BitrixDealEvent, BitrixInstallRequest, BitrixLeadEvent, BitrixOutboundE
 import { createWavePaymentLink } from "./wave";
 import { startBaltoCall, stopBaltoCall, syncBaltoCallData } from "./balto";
 import {
-  getBaltoCallSessionByVoipCallId,
+  getBaltoCallSessionByTelnyxIds,
   listBaltoCallSessions,
   upsertBaltoCallDataRecord,
   upsertBaltoCallSession
@@ -319,6 +319,62 @@ function readTelnyxCallMetadata(payload: TelnyxCallPayload | undefined): Record<
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
 }
 
+function readTelnyxCallState(payload: TelnyxCallPayload | undefined): string {
+  if (!payload) {
+    return "";
+  }
+
+  return readStringFromRecord(payload, [
+    "state",
+    "status",
+    "call_state",
+    "callState",
+    "call_status",
+    "callStatus"
+  ]).toLowerCase();
+}
+
+function isBaltoAnsweredCallEvent(eventType: string, payload: TelnyxCallPayload | undefined): boolean {
+  const normalizedEventType = eventType.trim().toLowerCase();
+  const state = readTelnyxCallState(payload);
+
+  if (["call.answered", "call.connected"].includes(normalizedEventType)) {
+    return true;
+  }
+
+  if (["ringing", "initiated", "dialing", "queued", "connecting", "early"].includes(state)) {
+    return false;
+  }
+
+  if (normalizedEventType === "call.bridged") {
+    return ["answered", "connected", "active", "live"].includes(state);
+  }
+
+  return false;
+}
+
+function isBaltoTerminalCallEvent(eventType: string, payload: TelnyxCallPayload | undefined): boolean {
+  const normalizedEventType = eventType.trim().toLowerCase();
+  const state = readTelnyxCallState(payload);
+  const terminalEventTypes = new Set([
+    "call.hangup",
+    "call.ended",
+    "call.rejected",
+    "call.declined",
+    "call.canceled",
+    "call.cancelled",
+    "call.failed",
+    "call.busy",
+    "call.no_answer"
+  ]);
+
+  return (
+    terminalEventTypes.has(normalizedEventType) ||
+    /\b(hangup|ended|rejected|declined|canceled|cancelled|failed|busy|no_answer)\b/.test(normalizedEventType) ||
+    ["hangup", "ended", "rejected", "declined", "canceled", "cancelled", "failed", "busy", "no_answer"].includes(state)
+  );
+}
+
 function resolveBaltoAgentIdentifier(metadata: Record<string, unknown>) {
   const email = (
     readStringFromRecord(metadata, [
@@ -356,6 +412,15 @@ function resolveBaltoCustomerPhone(payload: TelnyxCallPayload | undefined, direc
   const from = readTelnyxPhone(payload?.from);
   const to = readTelnyxPhone(payload?.to);
   const normalizedDirection = direction.trim().toLowerCase();
+
+  // When direction is missing, infer it: if `to` is our business number → inbound (customer is `from`)
+  if (!normalizedDirection) {
+    const businessNumber = config.telnyxFromNumber.replace(/\D/g, "");
+    const toDigits = to.replace(/\D/g, "");
+    const isInbound = businessNumber && toDigits && toDigits.endsWith(businessNumber.replace(/\D/g, ""));
+    return isInbound ? from || to : to || from;
+  }
+
   if (normalizedDirection === "outbound") {
     return to || from;
   }
@@ -365,8 +430,12 @@ function resolveBaltoCustomerPhone(payload: TelnyxCallPayload | undefined, direc
 function buildBaltoCallContext(body: TelnyxWebhook, record: TelnyxWebhookRecord) {
   const payload = body.data?.payload;
   const metadata = readTelnyxCallMetadata(payload);
-  const direction = readStringFromRecord(metadata, ["direction"]) || String(payload?.direction ?? "").trim();
-  const phoneNumber = resolveBaltoCustomerPhone(payload, direction);
+  const rawDirection = readStringFromRecord(metadata, ["direction"]) || String(payload?.direction ?? "").trim();
+  const phoneNumber = resolveBaltoCustomerPhone(payload, rawDirection);
+  // Infer direction from phone numbers when Telnyx omits it
+  const toPhone = readTelnyxPhone(payload?.to).replace(/\D/g, "");
+  const bizPhone = config.telnyxFromNumber.replace(/\D/g, "");
+  const direction = rawDirection || (bizPhone && toPhone && toPhone.endsWith(bizPhone) ? "inbound" : "outbound");
   const callControlId = String(payload?.call_control_id ?? "").trim();
   const callLegId = String(payload?.call_leg_id ?? "").trim();
   const voipCallId =
@@ -425,15 +494,19 @@ async function handleBaltoTelnyxCallEvent(body: TelnyxWebhook, record: TelnyxWeb
   const eventType = String(body.data?.event_type ?? "").toLowerCase();
   const startEventTypes = parseCsvSet(config.baltoStartEventTypes);
   const stopEventTypes = parseCsvSet(config.baltoStopEventTypes);
-  const shouldStart = startEventTypes.has(eventType);
-  const shouldStop = stopEventTypes.has(eventType);
+  const shouldStart = startEventTypes.has(eventType) && isBaltoAnsweredCallEvent(eventType, body.data?.payload);
+  const shouldStop = stopEventTypes.has(eventType) || isBaltoTerminalCallEvent(eventType, body.data?.payload);
 
   if (!shouldStart && !shouldStop) {
     return { enabled: true, action: "ignored", eventType };
   }
 
   const context = buildBaltoCallContext(body, record);
-  const existing = await getBaltoCallSessionByVoipCallId(context.voipCallId);
+  const existing = await getBaltoCallSessionByTelnyxIds({
+    voipCallId: context.voipCallId,
+    callControlId: context.telnyxCallControlId,
+    callLegId: context.telnyxCallLegId
+  });
   const identifier = context.agentEmail
     ? { email: context.agentEmail }
     : context.voipUserId
