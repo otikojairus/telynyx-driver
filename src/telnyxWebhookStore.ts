@@ -19,6 +19,7 @@ export interface TelnyxWebhookRecord {
     | "duplicate"
     | "forwarded_to_bitrix"
     | "bitrix_failed"
+    | "sent_from_bitrix_deal"
     | "stored_call_event"
     | "forwarded_call_event"
     | "call_forward_failed";

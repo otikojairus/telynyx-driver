@@ -310,24 +310,35 @@ export async function bindBitrixDealCardDatesWidget() {
 
 export async function bindBitrixDealSmsWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-sms`;
-  const placement = "CRM_DEAL_DETAIL_TAB";
+  const placements = ["CRM_DEAL_DETAIL_ACTIVITY", "CRM_DEAL_DETAIL_TAB", "CRM_DEAL_DETAIL_TOOLBAR"];
+  const results: Array<{ placement: string; unbind?: unknown; bind?: unknown; error?: string }> = [];
 
-  await callBitrixMethod("placement.unbind", {
-    PLACEMENT: placement,
-    HANDLER: handler
-  }).catch(() => null);
+  for (const placement of placements) {
+    try {
+      const unbind = await callBitrixMethod("placement.unbind", {
+        PLACEMENT: placement,
+        HANDLER: handler
+      });
 
-  const bind = await callBitrixMethod("placement.bind", {
-    PLACEMENT: placement,
-    HANDLER: handler,
-    TITLE: "SMS History"
-  });
+      const bind = await callBitrixMethod("placement.bind", {
+        PLACEMENT: placement,
+        HANDLER: handler,
+        TITLE: "SMS"
+      });
+
+      results.push({ placement, unbind, bind });
+    } catch (error) {
+      results.push({
+        placement,
+        error: error instanceof Error ? error.message : "Placement bind failed"
+      });
+    }
+  }
 
   return {
-    ok: true,
-    placement,
+    ok: results.some((item) => Boolean(item.bind)),
     handler,
-    bind
+    results
   };
 }
 
@@ -513,8 +524,12 @@ export async function sendToBitrixOpenChannel(params: {
   text: string;
   externalMessageId: string;
   eventTimestamp?: string;
+  customerName?: string;
+  customerEmail?: string;
+  dealId?: string;
 }) {
   const externalId = normalizeSmsParticipantId(params.sourcePhone);
+  const displayName = String(params.customerName ?? "").trim() || params.sourcePhone;
   const body = {
     CONNECTOR: config.bitrixConnectorId,
     LINE: config.bitrixLineId,
@@ -522,7 +537,9 @@ export async function sendToBitrixOpenChannel(params: {
       {
         user: {
           id: externalId,
-          name: params.sourcePhone,
+          name: displayName,
+          phone: params.sourcePhone,
+          email: params.customerEmail,
           url: "",
           picture: ""
         },
@@ -533,11 +550,12 @@ export async function sendToBitrixOpenChannel(params: {
         },
         chat: {
           id: externalId,
-          name: `SMS ${params.sourcePhone}`
+          name: `SMS ${displayName}`
         },
         extra: {
           from: params.sourcePhone,
-          to: params.destinationPhone
+          to: params.destinationPhone,
+          dealId: params.dealId
         }
       }
     ]

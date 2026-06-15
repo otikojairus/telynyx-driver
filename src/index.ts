@@ -716,6 +716,33 @@ function rememberBitrixSession(response: Awaited<ReturnType<typeof sendToBitrixO
   };
 }
 
+function rememberBitrixPhoneRoute(
+  phone: string,
+  response?: Awaited<ReturnType<typeof sendToBitrixOpenChannel>>
+) {
+  const externalId = buildChatId(phone);
+  phoneByChatId.set(externalId, phone);
+  phoneByUserId.set(externalId, phone);
+
+  const result = response?.result?.DATA?.RESULT?.[0];
+  const internalChatId = result?.session?.CHAT_ID;
+  const responseChatId = result?.chat?.id;
+  const responseUserId = result?.user;
+
+  for (const value of [internalChatId, responseChatId]) {
+    if (value) {
+      phoneByChatId.set(String(value), phone);
+    }
+  }
+
+  if (responseUserId) {
+    phoneByUserId.set(String(responseUserId), phone);
+  }
+
+  trimMap(phoneByChatId);
+  trimMap(phoneByUserId);
+}
+
 async function answerBitrixSessionIfPossible(
   response: Awaited<ReturnType<typeof sendToBitrixOpenChannel>>
 ) {
@@ -848,6 +875,74 @@ function normalizePhoneForSms(value: string): string {
   }
 
   return `+${digits}`;
+}
+
+async function resolveDealSmsCustomer(dealId: string) {
+  const dealResponse = await getBitrixDealById(dealId);
+  const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+  const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
+
+  if (!contactId) {
+    return {
+      deal,
+      contact: null,
+      contactId: "",
+      customerName: String(deal.TITLE ?? "").trim() || "Customer",
+      customerPhone: "",
+      customerEmail: ""
+    };
+  }
+
+  const contactResponse = await getBitrixContactById(contactId);
+  const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+
+  return {
+    deal,
+    contact,
+    contactId,
+    customerName: buildLeadCustomerName(contact),
+    customerPhone: normalizePhoneForSms(readLeadContactValue(contact.PHONE)),
+    customerEmail: readLeadContactValue(contact.EMAIL)
+  };
+}
+
+async function saveDealOutboundSmsRecord(params: {
+  dealId: string;
+  customerPhone: string;
+  text: string;
+  telnyxResponse: unknown;
+  bitrixResponse?: unknown;
+}) {
+  const responseRecord =
+    params.telnyxResponse && typeof params.telnyxResponse === "object"
+      ? params.telnyxResponse as Record<string, unknown>
+      : {};
+  const dataRecord =
+    responseRecord.data && typeof responseRecord.data === "object"
+      ? responseRecord.data as Record<string, unknown>
+      : {};
+  const telnyxMessageId = String(dataRecord.id ?? responseRecord.id ?? `deal-sms-${Date.now()}`);
+
+  await saveTelnyxWebhookRecord({
+    id: telnyxMessageId,
+    eventId: telnyxMessageId,
+    eventType: "message.sent",
+    eventChannel: "sms",
+    receivedAt: new Date().toISOString(),
+    from: config.telnyxFromNumber,
+    to: params.customerPhone,
+    text: params.text,
+    status: "sent_from_bitrix_deal",
+    rawBody: {
+      source: "bitrix-deal-sms-widget",
+      dealId: params.dealId,
+      telnyx: params.telnyxResponse,
+      bitrix: params.bitrixResponse
+    },
+    bitrix: params.bitrixResponse ? { ok: true } : undefined
+  });
+
+  return telnyxMessageId;
 }
 
 async function forwardBitrixReplyToThirdParty(params: {
@@ -1922,7 +2017,13 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
   });
   const dealId = String(placementOptions.ID ?? "").trim();
 
-  function renderSmsHtml(params: { dealId: string; phone: string; messages: Array<{ direction: "inbound" | "outbound"; text: string; at: string }>; error?: string }): string {
+  function renderSmsHtml(params: {
+    dealId: string;
+    phone: string;
+    customerName?: string;
+    messages: Array<{ direction: "inbound" | "outbound"; text: string; at: string }>;
+    error?: string;
+  }): string {
     const myNumber = config.telnyxFromNumber ?? "";
     const rows = params.messages.map((m) => {
       const isMine = m.direction === "outbound";
@@ -1939,9 +2040,19 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
     <style>
       *, *::before, *::after { box-sizing: border-box; }
       body { margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; background: #f6f8fb; color: #1a1a1a; }
-      .header { margin-bottom: 10px; }
+      .header { margin-bottom: 10px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
       .header h1 { font-size: 15px; margin: 0 0 2px; }
       .header .sub { color: #667085; font-size: 12px; }
+      .badge { flex: 0 0 auto; border: 1px solid #bfdbfe; color: #175cd3; background: #eff6ff; border-radius: 999px; padding: 4px 8px; font-size: 11px; }
+      .composer { background: #fff; border: 1px solid #dfe5ef; border-radius: 8px; padding: 10px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      textarea { display: block; width: 100%; min-height: 76px; resize: vertical; border: 1px solid #d0d5dd; border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.4; color: #101828; }
+      textarea:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
+      .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+      button { border: 0; border-radius: 7px; background: #0b66ff; color: #fff; font-weight: 600; padding: 8px 12px; cursor: pointer; }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .status { color: #667085; font-size: 12px; min-height: 16px; overflow-wrap: anywhere; }
+      .status.ok { color: #067647; }
+      .status.err { color: #b42318; }
       .thread { display: flex; flex-direction: column; gap: 6px; }
       .msg { display: flex; flex-direction: column; max-width: 80%; }
       .msg.out { align-self: flex-end; align-items: flex-end; }
@@ -1956,12 +2067,72 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
   </head>
   <body>
     <div class="header">
-      <h1>SMS History</h1>
-      <div class="sub">${params.phone ? `${escapeHtml(params.phone)} ↔ ${escapeHtml(myNumber)}` : `Deal ${escapeHtml(params.dealId)}`}</div>
+      <div>
+        <h1>SMS</h1>
+        <div class="sub">${params.phone ? `${escapeHtml(params.customerName || "Customer")} - ${escapeHtml(params.phone)} to ${escapeHtml(myNumber)}` : `Deal ${escapeHtml(params.dealId)}`}</div>
+      </div>
+      ${params.dealId && params.dealId !== "unknown" ? `<div class="badge">Deal ${escapeHtml(params.dealId)}</div>` : ""}
     </div>
     ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
+    ${!params.error ? `
+      <form class="composer" id="smsForm">
+        <textarea id="smsText" maxlength="1000" placeholder="Type an SMS to ${escapeHtml(params.customerName || "this customer")}"></textarea>
+        <div class="actions">
+          <button id="sendBtn" type="submit">Send SMS</button>
+          <div class="status" id="sendStatus"></div>
+        </div>
+      </form>
+    ` : ""}
     ${!params.error && params.messages.length ? `<div class="thread">${rows}</div>` : ""}
     ${!params.error && !params.messages.length ? `<div class="empty">No SMS messages found for this contact.</div>` : ""}
+    ${!params.error ? `
+      <script>
+        const form = document.getElementById("smsForm");
+        const text = document.getElementById("smsText");
+        const button = document.getElementById("sendBtn");
+        const status = document.getElementById("sendStatus");
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const message = text.value.trim();
+          if (!message) {
+            status.className = "status err";
+            status.textContent = "Enter a message first.";
+            return;
+          }
+
+          button.disabled = true;
+          status.className = "status";
+          status.textContent = "Sending...";
+
+          try {
+            const response = await fetch("/bitrix/widgets/deal-sms/send", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-inbound-secret": ${JSON.stringify(config.inboundDealWebhookSecret)}
+              },
+              body: JSON.stringify({
+                dealId: ${JSON.stringify(params.dealId)},
+                text: message
+              })
+            });
+            const json = await response.json();
+            if (!response.ok || !json.ok) {
+              throw new Error(json.error || "SMS send failed");
+            }
+            status.className = "status ok";
+            status.textContent = "Sent. Conversation opened in Bitrix.";
+            text.value = "";
+            window.setTimeout(() => window.location.reload(), 700);
+          } catch (error) {
+            status.className = "status err";
+            status.textContent = error?.message || "SMS send failed";
+            button.disabled = false;
+          }
+        });
+      </script>
+    ` : ""}
   </body>
 </html>`;
   }
@@ -1971,22 +2142,13 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
   }
 
   try {
-    const dealResponse = await getBitrixDealById(dealId);
-    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
-    const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
-
-    let phone = "";
-    if (contactId) {
-      const contactResponse = await getBitrixContactById(contactId);
-      const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
-      phone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
-    }
+    const customer = await resolveDealSmsCustomer(dealId);
+    const phone = customer.customerPhone;
 
     if (!phone) {
       return res.status(200).send(renderSmsHtml({ dealId, phone: "", messages: [], error: "No phone number found on the contact linked to this deal." }));
     }
 
-    const myNumber = config.telnyxFromNumber ?? "";
     const records = await listTelnyxSmsRecordsByPhone(phone);
     const messages = records
       .filter((r) => r.text)
@@ -1996,10 +2158,86 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
         at: r.receivedAt
       }));
 
-    return res.status(200).send(renderSmsHtml({ dealId, phone, messages }));
+    return res.status(200).send(renderSmsHtml({
+      dealId,
+      phone,
+      customerName: customer.customerName,
+      messages
+    }));
   } catch (error) {
     console.error("Failed to render SMS history widget", error);
     return res.status(200).send(renderSmsHtml({ dealId, phone: "", messages: [], error: error instanceof Error ? error.message : "SMS history could not be loaded." }));
+  }
+});
+
+app.post("/bitrix/widgets/deal-sms/send", async (req: Request, res: Response) => {
+  if (!verifyInboundDealSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid inbound secret" });
+  }
+
+  const body = req.body as { dealId?: string | number; text?: string };
+  const dealId = String(body.dealId ?? "").trim();
+  const text = String(body.text ?? "").trim();
+
+  if (!dealId || !text) {
+    return res.status(400).json({ ok: false, error: "Missing dealId or text" });
+  }
+
+  try {
+    const customer = await resolveDealSmsCustomer(dealId);
+    if (!customer.customerPhone) {
+      return res.status(400).json({ ok: false, error: "No phone number found on the contact linked to this deal." });
+    }
+
+    rememberBitrixPhoneRoute(customer.customerPhone);
+
+    const telnyxResponse = await sendSmsThroughTelnyx({
+      to: customer.customerPhone,
+      text
+    });
+    const telnyxMessageId = await saveDealOutboundSmsRecord({
+      dealId,
+      customerPhone: customer.customerPhone,
+      text,
+      telnyxResponse
+    });
+
+    const bitrixResponse = await sendToBitrixOpenChannel({
+      sourcePhone: customer.customerPhone,
+      destinationPhone: config.telnyxFromNumber,
+      text: `Outbound SMS sent from Deal ${dealId}:\n${text}`,
+      externalMessageId: `deal-${dealId}-${telnyxMessageId}`,
+      eventTimestamp: new Date().toISOString(),
+      customerName: customer.customerName,
+      customerEmail: customer.customerEmail,
+      dealId
+    });
+    rememberBitrixSession(bitrixResponse);
+    rememberBitrixPhoneRoute(customer.customerPhone, bitrixResponse);
+    const answer = await answerBitrixSessionIfPossible(bitrixResponse);
+    await saveDealOutboundSmsRecord({
+      dealId,
+      customerPhone: customer.customerPhone,
+      text,
+      telnyxResponse,
+      bitrixResponse
+    });
+
+    return res.status(200).json({
+      ok: true,
+      dealId,
+      customer: {
+        name: customer.customerName,
+        phone: customer.customerPhone,
+        email: customer.customerEmail
+      },
+      telnyx: telnyxResponse,
+      bitrix: bitrixResponse,
+      answer
+    });
+  } catch (error) {
+    console.error("Failed to send deal SMS", error);
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "SMS send failed" });
   }
 });
 
@@ -2713,6 +2951,7 @@ app.post("/webhooks/inbound/bitrix/channel/message", async (req: Request, res: R
       eventTimestamp: new Date().toISOString()
     });
     rememberBitrixSession(bitrixResponse);
+    rememberBitrixPhoneRoute(customerPhone, bitrixResponse);
     const answer = await answerBitrixSessionIfPossible(bitrixResponse);
 
     return res.status(200).json({
@@ -2800,6 +3039,7 @@ app.post("/debug/bitrix/test-message", async (req: Request, res: Response) => {
       eventTimestamp: new Date().toISOString()
     });
     rememberBitrixSession(bitrixResponse);
+    rememberBitrixPhoneRoute(from, bitrixResponse);
     const answer = await answerBitrixSessionIfPossible(bitrixResponse);
 
     return res.status(200).json({ ok: true, bitrix: bitrixResponse, answer });
@@ -2875,12 +3115,6 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
   }
 
   try {
-    const chatId = buildChatId(from);
-    phoneByChatId.set(chatId, from);
-    phoneByUserId.set(chatId, from);
-    trimMap(phoneByChatId);
-    trimMap(phoneByUserId);
-
     const bitrixResponse = await sendToBitrixOpenChannel({
       sourcePhone: from,
       destinationPhone: to,
@@ -2889,6 +3123,7 @@ app.post("/webhooks/telnyx", async (req: Request, res: Response) => {
       eventTimestamp: payload?.received_at
     });
     rememberBitrixSession(bitrixResponse);
+    rememberBitrixPhoneRoute(from, bitrixResponse);
     await answerBitrixSessionIfPossible(bitrixResponse);
 
     record.status = "forwarded_to_bitrix";

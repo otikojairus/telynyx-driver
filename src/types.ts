@@ -46,6 +46,7 @@ export interface BitrixSendMessageResponse {
     SUCCESS?: boolean;
     DATA?: {
       RESULT?: Array<{
+        user?: string | number;
         session?: {
           ID?: string | number;
           CHAT_ID?: string | number;
