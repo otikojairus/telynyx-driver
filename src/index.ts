@@ -2395,6 +2395,8 @@ app.all("/bitrix/widgets/call-card", (req: Request, res: Response) => {
     // ignore parse errors
   }
 
+  console.log("[call-card] PLACEMENT_OPTIONS:", { raw: placementOptionsRaw, parsed: { userId, phoneNumber, callId } });
+
   // When Bitrix opens the call card for an agent, look up their email and cache it by customer
   // phone number so Balto can identify the correct agent when call.answered fires from Telnyx.
   if (config.baltoEnabled && userId && phoneNumber) {
@@ -2402,12 +2404,15 @@ app.all("/bitrix/widgets/call-card", (req: Request, res: Response) => {
       .then(response => {
         const user = Array.isArray(response.result) ? response.result[0] : undefined;
         const email = String(user?.EMAIL ?? user?.email ?? "").trim();
+        console.log("[call-card] resolved agent:", { userId, email, phoneNumber });
         if (email) {
           callAgentByPhone.set(phoneNumber, { agentEmail: email, bitrixCallId: callId, storedAt: Date.now() });
           trimMap(callAgentByPhone);
         }
       })
-      .catch((err: unknown) => console.warn("Failed to resolve Bitrix agent email for call card", { userId, phoneNumber, err }));
+      .catch((err: unknown) => console.warn("[call-card] failed to resolve agent email", { userId, phoneNumber, err }));
+  } else if (config.baltoEnabled) {
+    console.warn("[call-card] skipping agent cache — missing userId or phoneNumber", { userId, phoneNumber });
   }
 
   const inboundSecret = config.inboundDealWebhookSecret;
