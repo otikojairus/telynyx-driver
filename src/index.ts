@@ -3369,6 +3369,19 @@ app.post("/bitrix/telephony/register", async (_req: Request, res: Response) => {
   }
 });
 
+app.post("/bitrix/widgets/deal-vendors/register", async (_req: Request, res: Response) => {
+  try {
+    const dealVendorsWidgetBind = await bindBitrixDealVendorsWidget();
+    return res.status(200).json({ ok: true, dealVendorsWidgetBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix vendors widget", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Bitrix vendors widget bind failed"
+    });
+  }
+});
+
 app.get("/bitrix/connector/status", async (_req: Request, res: Response) => {
   try {
     const status = await getBitrixConnectorStatus();
