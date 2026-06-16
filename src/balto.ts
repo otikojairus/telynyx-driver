@@ -72,10 +72,44 @@ const baltoDesktopClient = axios.create({
   baseURL: "https://desktop.baltocloud.com",
   timeout: 5000,
   headers: {
-    Accept: "application/json",
-    "Content-Type": "application/json"
+    Accept: "application/json"
   }
 });
+
+function serializeBaltoStartStopPayload(payload: BaltoStartStopPayload): Record<string, string> {
+  const params: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    params[key] = typeof value === "object" ? JSON.stringify(value) : String(value);
+  }
+
+  return params;
+}
+
+export function describeBaltoError(error: unknown): string {
+  if (!axios.isAxiosError(error)) {
+    return error instanceof Error ? error.message : "Balto request failed";
+  }
+
+  const status = error.response?.status;
+  const data = error.response?.data;
+  const responseBody =
+    typeof data === "string"
+      ? data
+      : data === undefined
+        ? ""
+        : JSON.stringify(data);
+  const parts = [
+    error.message,
+    status ? `status ${status}` : "",
+    responseBody ? `response ${responseBody}` : ""
+  ].filter(Boolean);
+
+  return parts.join("; ").slice(0, 1500);
+}
 
 export async function startBaltoCall(payload: Omit<BaltoStartStopPayload, "token">) {
   assertBaltoStartStopConfigured();
@@ -84,7 +118,9 @@ export async function startBaltoCall(payload: Omit<BaltoStartStopPayload, "token
     token: config.baltoAutoStartToken
   };
   const endpoint = chooseIdentifierEndpoint("start", body);
-  const response = await baltoDesktopClient.post(endpoint, body);
+  const response = await baltoDesktopClient.post(endpoint, undefined, {
+    params: serializeBaltoStartStopPayload(body)
+  });
   return response.data;
 }
 
@@ -95,7 +131,9 @@ export async function stopBaltoCall(payload: Omit<BaltoStartStopPayload, "token"
     token: config.baltoAutoStartToken
   };
   const endpoint = chooseIdentifierEndpoint("stop", body);
-  const response = await baltoDesktopClient.post(endpoint, body);
+  const response = await baltoDesktopClient.post(endpoint, undefined, {
+    params: serializeBaltoStartStopPayload(body)
+  });
   return response.data;
 }
 

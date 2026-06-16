@@ -255,6 +255,18 @@ export async function bindBitrixLeadEvents() {
   return { ok: true, events, handler };
 }
 
+export async function bindBitrixTelephonyEvents() {
+  const handler = `${config.publicBaseUrl}/webhooks/bitrix/telephony`;
+  const events = ["OnVoximplantCallStart", "OnVoximplantCallEnd"];
+
+  for (const event of events) {
+    await callBitrixMethod("event.unbind", { event, handler });
+    await callBitrixMethod("event.bind", { event, handler });
+  }
+
+  return { ok: true, events, handler };
+}
+
 export async function bindBitrixDealPaymentWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-payment`;
   const placements = ["CRM_DEAL_DETAIL_ACTIVITY", "CRM_DEAL_DETAIL_TAB", "CRM_DEAL_DETAIL_TOOLBAR"];

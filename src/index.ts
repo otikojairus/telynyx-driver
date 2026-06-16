@@ -11,6 +11,7 @@ import {
   bindBitrixDealFundingWidget,
   bindBitrixDealSmsWidget,
   bindBitrixLeadEvents,
+  bindBitrixTelephonyEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
   markBitrixAppInstalled,
@@ -46,9 +47,16 @@ import {
 } from "./telnyxWebhookStore";
 import { canSendEmail, sendLeadConfirmationEmail } from "./notifications";
 import { writeBitrixTokens } from "./tokenStore";
-import { BitrixDealEvent, BitrixInstallRequest, BitrixLeadEvent, BitrixOutboundEvent, TelnyxWebhook } from "./types";
+import {
+  BitrixDealEvent,
+  BitrixInstallRequest,
+  BitrixLeadEvent,
+  BitrixOutboundEvent,
+  BitrixTelephonyEvent,
+  TelnyxWebhook
+} from "./types";
 import { createWavePaymentLink } from "./wave";
-import { startBaltoCall, stopBaltoCall, syncBaltoCallData } from "./balto";
+import { describeBaltoError, startBaltoCall, stopBaltoCall, syncBaltoCallData } from "./balto";
 import {
   getBaltoCallSessionByTelnyxIds,
   listBaltoCallSessions,
@@ -235,6 +243,32 @@ function readTelnyxPhone(value: unknown): string {
   }
 
   return "";
+}
+
+function normalizePhoneKey(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+function rememberCallAgentByPhone(
+  phoneNumber: string,
+  agent: { agentEmail: string; bitrixCallId: string; storedAt: number }
+): void {
+  const trimmed = phoneNumber.trim();
+  if (trimmed) {
+    callAgentByPhone.set(trimmed, agent);
+  }
+
+  const digits = normalizePhoneKey(trimmed);
+  if (digits && digits !== trimmed) {
+    callAgentByPhone.set(digits, agent);
+  }
+
+  trimMap(callAgentByPhone);
+}
+
+function findCallAgentByPhone(phoneNumber: string) {
+  const trimmed = phoneNumber.trim();
+  return callAgentByPhone.get(trimmed) ?? callAgentByPhone.get(normalizePhoneKey(trimmed));
 }
 
 function parsePlacementOptions(body: Record<string, unknown>): Record<string, unknown> {
@@ -466,14 +500,15 @@ function buildBaltoCallContext(body: TelnyxWebhook, record: TelnyxWebhookRecord)
     "telnyx_call";
   const { email: metaEmail, voipUserId } = resolveBaltoAgentIdentifier(metadata);
   // If metadata had no agent email, check the call card map populated when Bitrix opened the widget.
-  const email = metaEmail || (phoneNumber ? callAgentByPhone.get(phoneNumber)?.agentEmail ?? "" : "");
+  const callAgent = phoneNumber ? findCallAgentByPhone(phoneNumber) : undefined;
+  const email = metaEmail || callAgent?.agentEmail || "";
 
   return {
     sessionId: `balto-${voipCallId}`,
     telnyxEventId: record.eventId || record.id,
     telnyxCallControlId: callControlId,
     telnyxCallLegId: callLegId,
-    bitrixCallId: bitrixCallId || (phoneNumber ? callAgentByPhone.get(phoneNumber)?.bitrixCallId ?? "" : ""),
+    bitrixCallId: bitrixCallId || callAgent?.bitrixCallId || "",
     bitrixDealId,
     agentEmail: email,
     voipUserId,
@@ -602,7 +637,7 @@ async function handleBaltoTelnyxCallEvent(body: TelnyxWebhook, record: TelnyxWeb
         voipCallId: context.voipCallId,
         voipCustomerId: context.voipCustomerId,
         voipCampaignName: context.voipCampaignName,
-        lastError: error instanceof Error ? error.message : "Balto start failed",
+        lastError: describeBaltoError(error),
         rawStartEvent: body
       });
       return { enabled: true, action: "start_failed", voipCallId: context.voipCallId };
@@ -659,10 +694,243 @@ async function handleBaltoTelnyxCallEvent(body: TelnyxWebhook, record: TelnyxWeb
       voipCallId: context.voipCallId,
       voipCustomerId: context.voipCustomerId || existing?.voipCustomerId,
       voipCampaignName: context.voipCampaignName || existing?.voipCampaignName,
-      lastError: error instanceof Error ? error.message : "Balto stop failed",
+      lastError: describeBaltoError(error),
       rawStopEvent: body
     });
     return { enabled: true, action: "stop_failed", voipCallId: context.voipCallId };
+  }
+}
+
+function getBitrixTelephonyFields(body: BitrixTelephonyEvent): Record<string, unknown> {
+  const data = body.data && typeof body.data === "object" && !Array.isArray(body.data) ? body.data : {};
+  const fields =
+    data.FIELDS && typeof data.FIELDS === "object" && !Array.isArray(data.FIELDS)
+      ? data.FIELDS as Record<string, unknown>
+      : {};
+
+  return { ...data, ...fields };
+}
+
+function readBitrixTelephonyUserId(fields: Record<string, unknown>): string {
+  return readStringFromRecord(fields, ["PORTAL_USER_ID", "USER_ID", "userId", "user_id"]);
+}
+
+function readBitrixTelephonyPhone(fields: Record<string, unknown>): string {
+  return readStringFromRecord(fields, [
+    "PHONE_NUMBER_INTERNATIONAL",
+    "PHONE_NUMBER",
+    "CALLER_ID",
+    "PORTAL_NUMBER",
+    "phoneNumber",
+    "phone"
+  ]);
+}
+
+function readBitrixTelephonyDirection(fields: Record<string, unknown>): string {
+  const raw =
+    readStringFromRecord(fields, ["DIRECTION", "direction"]) ||
+    readStringFromRecord(fields, ["CALL_TYPE", "callType"]);
+
+  if (raw === "1") {
+    return "outbound";
+  }
+  if (raw === "2") {
+    return "inbound";
+  }
+
+  return raw.trim().toLowerCase();
+}
+
+async function resolveBitrixUserEmail(userId: string): Promise<string> {
+  if (!userId) {
+    return "";
+  }
+
+  try {
+    const response = await getBitrixUserById(userId);
+    const user = Array.isArray(response.result) ? response.result[0] : undefined;
+    return String(user?.EMAIL ?? user?.email ?? "").trim();
+  } catch (error) {
+    console.warn("[bitrix-telephony] failed to resolve user email", {
+      userId,
+      error: error instanceof Error ? error.message : error
+    });
+    return "";
+  }
+}
+
+async function handleBaltoBitrixTelephonyEvent(body: BitrixTelephonyEvent) {
+  if (!config.baltoEnabled) {
+    return { enabled: false };
+  }
+
+  const eventName = String(body.event ?? "").toUpperCase();
+  const fields = getBitrixTelephonyFields(body);
+  const callId = readStringFromRecord(fields, ["CALL_ID", "callId", "call_id"]);
+
+  if (!callId) {
+    return { enabled: true, action: "ignored", error: "missing_call_id", event: body.event };
+  }
+
+  const userId = readBitrixTelephonyUserId(fields);
+  const email = await resolveBitrixUserEmail(userId);
+  const phoneNumber = readBitrixTelephonyPhone(fields);
+  const direction = readBitrixTelephonyDirection(fields);
+  const voipCampaignName =
+    readStringFromRecord(fields, ["LINE_NAME", "LINE_NUMBER", "lineNumber", "line"]) ||
+    direction ||
+    "bitrix_call";
+  const existing = await getBaltoCallSessionByTelnyxIds({ voipCallId: callId });
+  const identifier = email
+    ? { email }
+    : existing?.agentEmail
+      ? { email: existing.agentEmail }
+      : config.baltoDefaultAgentEmail
+        ? { email: config.baltoDefaultAgentEmail }
+        : config.baltoDefaultVoipUserId
+          ? { voip_user_id: config.baltoDefaultVoipUserId }
+          : {};
+
+  if (eventName === "ONVOXIMPLANTCALLSTART") {
+    if (!("email" in identifier) && !("voip_user_id" in identifier)) {
+      await upsertBaltoCallSession({
+        id: `balto-bitrix-${callId}`,
+        status: "start_failed",
+        bitrixCallId: callId,
+        agentEmail: email || undefined,
+        phoneNumber: phoneNumber || undefined,
+        direction: direction || undefined,
+        voipCallId: callId,
+        voipCustomerId: phoneNumber || undefined,
+        voipCampaignName,
+        lastError: "Missing Bitrix agent email for Balto start. Ensure the Bitrix user has an email or configure BALTO_DEFAULT_AGENT_EMAIL.",
+        rawStartEvent: body
+      });
+      return { enabled: true, action: "start_failed", error: "missing_agent_identifier", bitrixCallId: callId };
+    }
+
+    if (existing?.startRequestedAt && existing.status !== "start_failed") {
+      return { enabled: true, action: "start_duplicate", bitrixCallId: callId };
+    }
+
+    try {
+      const response = await startBaltoCall({
+        ...identifier,
+        voip_call_id: callId,
+        voip_customer_id: phoneNumber || undefined,
+        voip_campaign_name: voipCampaignName,
+        direction: direction || undefined,
+        integration: config.baltoIntegrationName,
+        timestamp:
+          readStringFromRecord(fields, ["CALL_START_DATE", "callStartDate", "DATE_CREATE"]) ||
+          new Date().toISOString(),
+        voip_metadata: {
+          bitrix_call_id: callId,
+          bitrix_user_id: userId || undefined,
+          phone_number: phoneNumber || undefined,
+          ...fields
+        }
+      });
+
+      await upsertBaltoCallSession({
+        id: existing?.id ?? `balto-bitrix-${callId}`,
+        status: "started",
+        bitrixCallId: callId,
+        agentEmail: email || existing?.agentEmail,
+        phoneNumber: phoneNumber || existing?.phoneNumber,
+        direction: direction || existing?.direction,
+        voipCallId: callId,
+        voipCustomerId: phoneNumber || existing?.voipCustomerId,
+        voipCampaignName: voipCampaignName || existing?.voipCampaignName,
+        startRequestedAt: new Date().toISOString(),
+        startResponse: response,
+        rawStartEvent: body
+      });
+      return { enabled: true, action: "started", bitrixCallId: callId };
+    } catch (error) {
+      await upsertBaltoCallSession({
+        id: existing?.id ?? `balto-bitrix-${callId}`,
+        status: "start_failed",
+        bitrixCallId: callId,
+        agentEmail: email || existing?.agentEmail,
+        phoneNumber: phoneNumber || existing?.phoneNumber,
+        direction: direction || existing?.direction,
+        voipCallId: callId,
+        voipCustomerId: phoneNumber || existing?.voipCustomerId,
+        voipCampaignName: voipCampaignName || existing?.voipCampaignName,
+        lastError: describeBaltoError(error),
+        rawStartEvent: body
+      });
+      return { enabled: true, action: "start_failed", bitrixCallId: callId };
+    }
+  }
+
+  if (eventName !== "ONVOXIMPLANTCALLEND") {
+    return { enabled: true, action: "ignored", event: body.event, bitrixCallId: callId };
+  }
+
+  if (!("email" in identifier) && !("voip_user_id" in identifier)) {
+    await upsertBaltoCallSession({
+      id: existing?.id ?? `balto-bitrix-${callId}`,
+      status: "stop_failed",
+      bitrixCallId: callId,
+      agentEmail: email || existing?.agentEmail,
+      phoneNumber: phoneNumber || existing?.phoneNumber,
+      direction: direction || existing?.direction,
+      voipCallId: callId,
+      voipCustomerId: phoneNumber || existing?.voipCustomerId,
+      voipCampaignName: voipCampaignName || existing?.voipCampaignName,
+      lastError: "Missing Bitrix agent email for Balto stop. Ensure the Bitrix user has an email or configure BALTO_DEFAULT_AGENT_EMAIL.",
+      rawStopEvent: body
+    });
+    return { enabled: true, action: "stop_failed", error: "missing_agent_identifier", bitrixCallId: callId };
+  }
+
+  if (existing?.stopRequestedAt && existing.status !== "stop_failed") {
+    return { enabled: true, action: "stop_duplicate", bitrixCallId: callId };
+  }
+
+  try {
+    const response = await stopBaltoCall({
+      ...identifier,
+      voip_call_id: callId,
+      voip_customer_id: phoneNumber || existing?.voipCustomerId,
+      voip_campaign_name: voipCampaignName || existing?.voipCampaignName,
+      direction: direction || existing?.direction,
+      integration: config.baltoIntegrationName,
+      timestamp: new Date().toISOString()
+    });
+
+    await upsertBaltoCallSession({
+      id: existing?.id ?? `balto-bitrix-${callId}`,
+      status: "stopped",
+      bitrixCallId: callId,
+      agentEmail: email || existing?.agentEmail,
+      phoneNumber: phoneNumber || existing?.phoneNumber,
+      direction: direction || existing?.direction,
+      voipCallId: callId,
+      voipCustomerId: phoneNumber || existing?.voipCustomerId,
+      voipCampaignName: voipCampaignName || existing?.voipCampaignName,
+      stopRequestedAt: new Date().toISOString(),
+      stopResponse: response,
+      rawStopEvent: body
+    });
+    return { enabled: true, action: "stopped", bitrixCallId: callId };
+  } catch (error) {
+    await upsertBaltoCallSession({
+      id: existing?.id ?? `balto-bitrix-${callId}`,
+      status: "stop_failed",
+      bitrixCallId: callId,
+      agentEmail: email || existing?.agentEmail,
+      phoneNumber: phoneNumber || existing?.phoneNumber,
+      direction: direction || existing?.direction,
+      voipCallId: callId,
+      voipCustomerId: phoneNumber || existing?.voipCustomerId,
+      voipCampaignName: voipCampaignName || existing?.voipCampaignName,
+      lastError: describeBaltoError(error),
+      rawStopEvent: body
+    });
+    return { enabled: true, action: "stop_failed", bitrixCallId: callId };
   }
 }
 
@@ -1793,6 +2061,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const eventBind = await bindBitrixConnectorEvents();
     const dealEventBind = await bindBitrixDealEvents();
     const leadEventBind = await bindBitrixLeadEvents();
+    const telephonyEventBind = await bindBitrixTelephonyEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
     const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
@@ -1814,7 +2083,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, telephonyEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -1866,6 +2135,9 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
 
     step = "event.bind:lead";
     result.leadEventBind = await bindBitrixLeadEvents();
+
+    step = "event.bind:telephony";
+    result.telephonyEventBind = await bindBitrixTelephonyEvents();
 
     step = "placement.bind:deal-payment";
     result.dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
@@ -2406,8 +2678,7 @@ app.all("/bitrix/widgets/call-card", (req: Request, res: Response) => {
         const email = String(user?.EMAIL ?? user?.email ?? "").trim();
         console.log("[call-card] resolved agent:", { userId, email, phoneNumber });
         if (email) {
-          callAgentByPhone.set(phoneNumber, { agentEmail: email, bitrixCallId: callId, storedAt: Date.now() });
-          trimMap(callAgentByPhone);
+          rememberCallAgentByPhone(phoneNumber, { agentEmail: email, bitrixCallId: callId, storedAt: Date.now() });
         }
       })
       .catch((err: unknown) => console.warn("[call-card] failed to resolve agent email", { userId, phoneNumber, err }));
@@ -2801,6 +3072,16 @@ app.post("/bitrix/leads/register", async (_req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to bind Bitrix lead events", error);
     return res.status(500).json({ ok: false, error: "Bitrix lead event binding failed" });
+  }
+});
+
+app.post("/bitrix/telephony/register", async (_req: Request, res: Response) => {
+  try {
+    const telephonyEventBind = await bindBitrixTelephonyEvents();
+    return res.status(200).json({ ok: true, telephonyEventBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix telephony events", error);
+    return res.status(500).json({ ok: false, error: "Bitrix telephony event binding failed" });
   }
 });
 
@@ -3381,6 +3662,30 @@ app.post("/webhooks/bitrix", async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : "Unknown outbound SMS error"
     });
     return res.status(500).json({ ok: false, error: "Outbound failed" });
+  }
+});
+
+app.post("/webhooks/bitrix/telephony", async (req: Request, res: Response) => {
+  if (!verifyBitrixSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid Bitrix secret" });
+  }
+
+  const event = req.body as BitrixTelephonyEvent;
+  const eventName = String(event.event ?? "").toUpperCase();
+
+  if (!["ONVOXIMPLANTCALLSTART", "ONVOXIMPLANTCALLEND"].includes(eventName)) {
+    return res.status(200).json({ ok: true, ignored: true, event: event.event });
+  }
+
+  try {
+    const balto = await handleBaltoBitrixTelephonyEvent(event);
+    return res.status(200).json({ ok: true, balto });
+  } catch (error) {
+    console.error("Failed to handle Bitrix telephony Balto event", {
+      event: event.event,
+      error: error instanceof Error ? error.message : error
+    });
+    return res.status(500).json({ ok: false, error: "Bitrix telephony Balto handling failed" });
   }
 });
 

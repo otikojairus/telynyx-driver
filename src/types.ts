@@ -149,3 +149,28 @@ export interface BitrixLeadEvent {
     member_id?: string;
   } & Record<string, unknown>;
 }
+
+export interface BitrixTelephonyEvent {
+  event?: string;
+  data?: {
+    CALL_ID?: string | number;
+    CALL_TYPE?: string | number;
+    PHONE_NUMBER?: string;
+    PHONE_NUMBER_INTERNATIONAL?: string;
+    CALLER_ID?: string;
+    PORTAL_NUMBER?: string;
+    LINE_NUMBER?: string | number;
+    PORTAL_USER_ID?: string | number;
+    USER_ID?: string | number;
+    CALL_DURATION?: string | number;
+    CALL_START_DATE?: string;
+    CALL_FAILED_CODE?: string | number;
+    CALL_FAILED_REASON?: string;
+    CRM_ACTIVITY_ID?: string | number;
+  } & Record<string, unknown>;
+  auth?: {
+    domain?: string;
+    member_id?: string;
+    application_token?: string;
+  } & Record<string, unknown>;
+}
