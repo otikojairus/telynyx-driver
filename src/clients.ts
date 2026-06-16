@@ -391,6 +391,29 @@ export async function bindBitrixDealFundingWidget() {
   };
 }
 
+export async function bindBitrixDealVendorsWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-vendors`;
+  const placement = "CRM_DEAL_DETAIL_TAB";
+
+  await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  }).catch(() => null);
+
+  const bind = await callBitrixMethod("placement.bind", {
+    PLACEMENT: placement,
+    HANDLER: handler,
+    TITLE: "Vendors Available"
+  });
+
+  return {
+    ok: true,
+    placement,
+    handler,
+    bind
+  };
+}
+
 export async function unbindBitrixCallCardWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/call-card`;
   const placement = "CALL_CARD";

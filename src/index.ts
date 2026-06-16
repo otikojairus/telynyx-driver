@@ -9,6 +9,7 @@ import {
   bindBitrixDealEvents,
   bindBitrixDealCardDatesWidget,
   bindBitrixDealFundingWidget,
+  bindBitrixDealVendorsWidget,
   bindBitrixDealSmsWidget,
   bindBitrixLeadEvents,
   bindBitrixTelephonyEvents,
@@ -1573,6 +1574,27 @@ function formatMatchedVendors(vendors: Array<Record<string, unknown>>): string {
     .join("\n");
 }
 
+interface VendorLookupRequest {
+  fullName?: string;
+  phoneNumber?: string;
+  city?: string;
+  province?: string;
+  country?: string;
+  postal?: string;
+  vertical?: string;
+}
+
+interface VendorLookupResult {
+  request: VendorLookupRequest;
+  response: unknown;
+  vendors: Array<Record<string, unknown>>;
+  count: number;
+  serviceVertical: string;
+  gapMessage: string;
+  geoWarning: string;
+  error?: string;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -1705,6 +1727,204 @@ function escapeHtml(value: unknown): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function compactVendorLookupRequest(input: VendorLookupRequest): VendorLookupRequest {
+  return Object.fromEntries(
+    Object.entries(input)
+      .map(([key, value]) => [key, String(value ?? "").trim()])
+      .filter(([, value]) => Boolean(value))
+  ) as VendorLookupRequest;
+}
+
+function normalizeVendorVertical(value: string): string {
+  const normalized = value.trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.includes("plumb") || lower.includes("drain") || lower.includes("sewer")) {
+    return "Plumbing";
+  }
+  if (lower.includes("hvac") || lower.includes("air conditioning") || lower.includes("heating")) {
+    return "HVAC";
+  }
+  if (lower.includes("roof")) {
+    return "Roofing";
+  }
+  if (lower.includes("septic")) {
+    return "Septic";
+  }
+  if (lower.includes("mold")) {
+    return "Mold";
+  }
+  if (lower.includes("flood") || lower.includes("water damage")) {
+    return "Water Damage";
+  }
+
+  return normalized;
+}
+
+function buildVendorLookupRequestFromDeal(params: {
+  deal: Record<string, unknown>;
+  contact: Record<string, unknown>;
+  serviceType: string;
+}): VendorLookupRequest {
+  const { deal, contact, serviceType } = params;
+  const serviceCategoryStr = readAsStringArray(deal, ["UF_CRM_1780329708763"]);
+  const serviceCategoryEnum = resolveEnumId(BITRIX_SERVICE_CATEGORY_ENUM, deal["UF_CRM_1780330078905"]);
+  const serviceTypeResolved = resolveEnumId(BITRIX_SERVICE_TYPES_ENUM, deal["UF_CRM_1780330671084"]);
+  const verticalCandidate = serviceCategoryStr[0] || serviceCategoryEnum || serviceTypeResolved || serviceType;
+  const contactName = Object.keys(contact).length ? buildLeadCustomerName(contact) : "";
+
+  return compactVendorLookupRequest({
+    fullName: contactName || String(deal.TITLE ?? "").trim(),
+    phoneNumber: readLeadContactValue(contact.PHONE) || readFirstNonEmptyString(deal, ["PHONE", "UF_CRM_PHONE"]),
+    city: readFirstNonEmptyString(deal, ["UF_CRM_1780329478655", "ADDRESS_CITY"]) ||
+      readFirstNonEmptyString(contact, ["ADDRESS_CITY"]),
+    province: readFirstNonEmptyString(deal, ["UF_CRM_1780329514570", "ADDRESS_PROVINCE", "ADDRESS_REGION"]) ||
+      readFirstNonEmptyString(contact, ["ADDRESS_PROVINCE", "ADDRESS_REGION"]),
+    country: readFirstNonEmptyString(deal, ["UF_CRM_1780329497687", "ADDRESS_COUNTRY"]) ||
+      readFirstNonEmptyString(contact, ["ADDRESS_COUNTRY"]),
+    postal: readFirstNonEmptyString(deal, ["UF_CRM_POSTAL_CODE", "ADDRESS_POSTAL_CODE", "POSTAL_CODE"]) ||
+      readFirstNonEmptyString(contact, ["ADDRESS_POSTAL_CODE", "POSTAL_CODE"]),
+    vertical: verticalCandidate ? normalizeVendorVertical(verticalCandidate) : ""
+  });
+}
+
+async function fetchVendorLookupData(request: VendorLookupRequest): Promise<VendorLookupResult> {
+  const response = await axios.post(config.csrIntakeWebhookUrl, request, {
+    headers: { "Content-Type": "application/json" },
+    timeout: 15000
+  });
+  const body = response.data;
+  const data = isPlainRecord(body) && isPlainRecord(body.data) ? body.data : {};
+  const samDispatch = isPlainRecord(data.samDispatch) ? data.samDispatch : {};
+  const vendors = Array.isArray(samDispatch.vendors)
+    ? samDispatch.vendors.filter(isPlainRecord)
+    : [];
+
+  return {
+    request,
+    response: body,
+    vendors,
+    count: Number(samDispatch.count ?? vendors.length),
+    serviceVertical: String(data.serviceVertical ?? request.vertical ?? "").trim(),
+    gapMessage: String(samDispatch.gap_message ?? "").trim(),
+    geoWarning: String(samDispatch.geo_warning ?? "").trim()
+  };
+}
+
+function formatVendorDistance(vendor: Record<string, unknown>): string {
+  const distance = vendor.distance_km;
+  const driveTime = vendor.drive_time_minutes;
+  const parts = [];
+
+  if (distance !== null && distance !== undefined && distance !== "") {
+    parts.push(`${distance} km`);
+  }
+  if (driveTime !== null && driveTime !== undefined && driveTime !== "") {
+    parts.push(`${driveTime} min`);
+  }
+
+  return parts.join(" / ") || "Not available";
+}
+
+function renderVendorCard(vendor: Record<string, unknown>, index: number): string {
+  const rank = vendor.display_rank ?? index + 1;
+  const name = String(vendor.vendor_name ?? `Vendor ${rank}`).trim();
+  const phone = String(vendor.phone ?? "").trim();
+  const email = String(vendor.email ?? "").trim();
+  const matchType = String(vendor.match_type ?? "").trim();
+  const coverage = String(vendor.coverage_status ?? "").trim();
+  const score = vendor.match_score ?? "";
+  const guidance = String(vendor.dispatch_guidance ?? "").trim();
+  const baseCity = String(vendor.base_city ?? "").trim();
+  const customerCity = String(vendor.customer_city ?? "").trim();
+  const vertical = String(vendor.vertical ?? "").trim();
+  const vendorId = String(vendor.vendor_id ?? "").trim();
+
+  return `
+    <article class="vendor-card">
+      <div class="card-top">
+        <div>
+          <div class="rank">#${escapeHtml(rank)}</div>
+          <h2>${escapeHtml(name)}</h2>
+          <div class="meta">${escapeHtml([vertical, matchType, coverage].filter(Boolean).join(" · ") || "Vendor match")}</div>
+        </div>
+        ${score !== "" ? `<div class="score">${escapeHtml(score)}</div>` : ""}
+      </div>
+      <dl>
+        <div><dt>Phone</dt><dd>${phone ? `<a href="tel:${escapeHtml(phone)}">${escapeHtml(phone)}</a>` : "Not provided"}</dd></div>
+        <div><dt>Email</dt><dd>${email ? `<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>` : "Not provided"}</dd></div>
+        <div><dt>Base</dt><dd>${escapeHtml(baseCity || "Not specified")}</dd></div>
+        <div><dt>Customer City</dt><dd>${escapeHtml(customerCity || "Not specified")}</dd></div>
+        <div><dt>Distance</dt><dd>${escapeHtml(formatVendorDistance(vendor))}</dd></div>
+        <div><dt>Vendor ID</dt><dd>${escapeHtml(vendorId || "Not provided")}</dd></div>
+      </dl>
+      ${guidance ? `<div class="guidance">${escapeHtml(guidance)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderVendorLookupHtml(params: {
+  dealId: string;
+  request: VendorLookupRequest;
+  result?: VendorLookupResult;
+  error?: string;
+}): string {
+  const requestEntries = Object.entries(params.request);
+  const vendors = params.result?.vendors ?? [];
+  const count = params.result?.count ?? vendors.length;
+  const serviceVertical = params.result?.serviceVertical || params.request.vertical || "";
+  const gapMessage = params.result?.gapMessage ?? "";
+  const geoWarning = params.result?.geoWarning ?? "";
+
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vendors Available</title>
+    <style>
+      body { margin: 0; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #172033; background: #f6f8fb; }
+      .header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
+      h1 { margin: 0; font-size: 18px; line-height: 1.25; color: #101828; }
+      .sub { margin-top: 4px; color: #667085; font-size: 13px; }
+      .count { background: #ecfdf3; color: #067647; border: 1px solid #abefc6; border-radius: 999px; padding: 5px 9px; font-size: 12px; white-space: nowrap; font-weight: 700; }
+      .query { margin: 0 0 14px; color: #475467; font-size: 12px; line-height: 1.45; }
+      .notice { margin: 0 0 12px; border: 1px solid #fedf89; background: #fffaeb; color: #93370d; border-radius: 8px; padding: 10px; font-size: 12px; line-height: 1.4; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+      .vendor-card { background: white; border: 1px solid #dfe5ef; border-radius: 8px; padding: 14px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .card-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+      .rank { color: #175cd3; font-size: 12px; font-weight: 700; margin-bottom: 3px; }
+      h2 { margin: 0; font-size: 15px; line-height: 1.3; color: #101828; }
+      .meta { margin-top: 4px; color: #667085; font-size: 12px; text-transform: capitalize; }
+      .score { min-width: 42px; text-align: center; border-radius: 6px; padding: 5px 7px; background: #eff8ff; color: #175cd3; font-weight: 700; font-size: 12px; }
+      dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 12px 0; }
+      dt { color: #667085; font-size: 11px; text-transform: uppercase; }
+      dd { margin: 2px 0 0; color: #101828; font-size: 13px; overflow-wrap: anywhere; }
+      a { color: #175cd3; text-decoration: none; font-weight: 600; }
+      .guidance { margin-top: 8px; color: #344054; background: #f8fafc; border: 1px solid #eaecf0; border-radius: 7px; padding: 9px; font-size: 12px; line-height: 1.4; }
+      .empty, .error { background: white; border: 1px solid #dfe5ef; border-radius: 8px; padding: 16px; color: #475467; }
+      .error { border-color: #fecdca; color: #b42318; background: #fffbfa; }
+      @media (max-width: 560px) { body { padding: 12px; } .header { display: block; } .count { display: inline-block; margin-top: 8px; } dl { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>Vendors Available</h1>
+        <div class="sub">Deal ${escapeHtml(params.dealId)}${serviceVertical ? ` · ${escapeHtml(serviceVertical)}` : ""}</div>
+      </div>
+      <div class="count">${escapeHtml(count)} found</div>
+    </div>
+    ${requestEntries.length ? `<p class="query">${escapeHtml(requestEntries.map(([key, value]) => `${humanizeFundingKey(key)}: ${value}`).join(" · "))}</p>` : ""}
+    ${gapMessage ? `<div class="notice">${escapeHtml(gapMessage)}</div>` : ""}
+    ${geoWarning ? `<div class="notice">${escapeHtml(geoWarning)}</div>` : ""}
+    ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
+    ${!params.error && vendors.length ? `<div class="grid">${vendors.map(renderVendorCard).join("")}</div>` : ""}
+    ${!params.error && !vendors.length ? `<div class="empty">No vendors returned for this deal.</div>` : ""}
+  </body>
+</html>`;
 }
 
 function formatFundingResult(result: Record<string, unknown>, index: number): string {
@@ -2064,6 +2284,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const telephonyEventBind = await bindBitrixTelephonyEvents();
     const dealPaymentWidgetBind = await bindBitrixDealPaymentWidget();
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
+    const dealVendorsWidgetBind = await bindBitrixDealVendorsWidget();
     const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
     const dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
@@ -2083,7 +2304,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, telephonyEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, telephonyEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealVendorsWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -2144,6 +2365,9 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
 
     step = "placement.bind:deal-funding";
     result.dealFundingWidgetBind = await bindBitrixDealFundingWidget();
+
+    step = "placement.bind:deal-vendors";
+    result.dealVendorsWidgetBind = await bindBitrixDealVendorsWidget();
 
     step = "placement.bind:deal-sms";
     result.dealSmsWidgetBind = await bindBitrixDealSmsWidget();
@@ -2235,6 +2459,66 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
       matchParams: {},
       results: [],
       error: error instanceof Error ? error.message : "Funding matches could not be loaded."
+    }));
+  }
+});
+
+app.all("/bitrix/widgets/deal-vendors", async (req: Request, res: Response) => {
+  const placementOptions = parsePlacementOptions({
+    PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
+  });
+  const dealId = String(placementOptions.ID ?? "").trim();
+
+  if (!dealId) {
+    return res.status(200).send(renderVendorLookupHtml({
+      dealId: "Not found",
+      request: {},
+      error: "Missing deal ID from Bitrix placement context."
+    }));
+  }
+
+  try {
+    const dealResponse = await getBitrixDealById(dealId);
+    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+    const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
+    let contact: Record<string, unknown> = {};
+
+    if (contactId) {
+      const contactResponse = await getBitrixContactById(contactId);
+      contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+    }
+
+    const serviceType = buildLeadServiceType(deal);
+    const request = buildVendorLookupRequestFromDeal({ deal, contact, serviceType });
+    if (!Object.keys(request).length) {
+      return res.status(200).send(renderVendorLookupHtml({
+        dealId,
+        request,
+        error: "No customer or location fields were found on this deal."
+      }));
+    }
+
+    const result = await fetchVendorLookupData(request);
+    if (result.vendors.length) {
+      void updateBitrixDealFields({
+        dealId,
+        fields: { UF_CRM_1780342754: formatMatchedVendors(result.vendors) }
+      }).catch((err: unknown) => {
+        console.error("Failed to sync vendor field from widget", err instanceof Error ? err.message : err);
+      });
+    }
+
+    return res.status(200).send(renderVendorLookupHtml({
+      dealId,
+      request,
+      result
+    }));
+  } catch (error) {
+    console.error("Failed to render vendors available widget", error);
+    return res.status(200).send(renderVendorLookupHtml({
+      dealId,
+      request: {},
+      error: error instanceof Error ? error.message : "Vendor lookup could not be loaded."
     }));
   }
 });
