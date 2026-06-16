@@ -1146,31 +1146,62 @@ function normalizePhoneForSms(value: string): string {
   return `+${digits}`;
 }
 
+function readPhoneFromText(value: unknown): string {
+  const text = String(value ?? "");
+  if (!text.trim()) {
+    return "";
+  }
+
+  const labeled = text.match(/\bPhone\s*:\s*([+()\-\d\s.]{7,24})/i);
+  if (labeled?.[1]) {
+    return normalizePhoneForSms(labeled[1]);
+  }
+
+  const generic = text.match(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4})/);
+  return generic?.[0] ? normalizePhoneForSms(generic[0]) : "";
+}
+
+function resolveDealSmsPhone(deal: Record<string, unknown>, contact: Record<string, unknown>): string {
+  return normalizePhoneForSms(readLeadContactValue(contact.PHONE)) ||
+    normalizePhoneForSms(readFirstNonEmptyString(deal, [
+      "PHONE",
+      "PHONE_NUMBER",
+      "UF_CRM_PHONE",
+      "UF_CRM_PHONE_NUMBER",
+      "UF_CRM_CUSTOMER_PHONE",
+      "UF_CRM_CLIENT_PHONE"
+    ])) ||
+    readPhoneFromText(deal.COMMENTS) ||
+    readPhoneFromText(deal.DESCRIPTION);
+}
+
+function buildDealSmsCustomerName(deal: Record<string, unknown>, contact: Record<string, unknown>): string {
+  if (Object.keys(contact).length) {
+    return buildLeadCustomerName(contact);
+  }
+
+  const title = String(deal.TITLE ?? "").trim();
+  const fromTitle = title.split(" - ")[0]?.trim();
+  return fromTitle || title || "Customer";
+}
+
 async function resolveDealSmsCustomer(dealId: string) {
   const dealResponse = await getBitrixDealById(dealId);
   const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
   const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
+  let contact: Record<string, unknown> = {};
 
-  if (!contactId) {
-    return {
-      deal,
-      contact: null,
-      contactId: "",
-      customerName: String(deal.TITLE ?? "").trim() || "Customer",
-      customerPhone: "",
-      customerEmail: ""
-    };
+  if (contactId) {
+    const contactResponse = await getBitrixContactById(contactId);
+    contact = (contactResponse.result ?? {}) as Record<string, unknown>;
   }
-
-  const contactResponse = await getBitrixContactById(contactId);
-  const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
 
   return {
     deal,
     contact,
     contactId,
-    customerName: buildLeadCustomerName(contact),
-    customerPhone: normalizePhoneForSms(readLeadContactValue(contact.PHONE)),
+    customerName: buildDealSmsCustomerName(deal, contact),
+    customerPhone: resolveDealSmsPhone(deal, contact),
     customerEmail: readLeadContactValue(contact.EMAIL)
   };
 }
@@ -2622,6 +2653,7 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
     phone: string;
     customerName?: string;
     messages: Array<{ direction: "inbound" | "outbound"; text: string; at: string }>;
+    requirePhoneInput?: boolean;
     error?: string;
   }): string {
     const myNumber = config.telnyxFromNumber ?? "";
@@ -2645,8 +2677,11 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
       .header .sub { color: #667085; font-size: 12px; }
       .badge { flex: 0 0 auto; border: 1px solid #bfdbfe; color: #175cd3; background: #eff6ff; border-radius: 999px; padding: 4px 8px; font-size: 11px; }
       .composer { background: #fff; border: 1px solid #dfe5ef; border-radius: 8px; padding: 10px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .phone-row { margin-bottom: 8px; }
+      .phone-row label { display: block; color: #667085; font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+      input { display: block; width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 8px 10px; font: inherit; color: #101828; }
       textarea { display: block; width: 100%; min-height: 76px; resize: vertical; border: 1px solid #d0d5dd; border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.4; color: #101828; }
-      textarea:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
+      input:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
       .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
       button { border: 0; border-radius: 7px; background: #0b66ff; color: #fff; font-weight: 600; padding: 8px 12px; cursor: pointer; }
       button:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -2676,6 +2711,12 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
     ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
     ${!params.error ? `
       <form class="composer" id="smsForm">
+        ${params.requirePhoneInput ? `
+          <div class="phone-row">
+            <label for="smsPhone">Customer phone</label>
+            <input id="smsPhone" name="phoneNumber" type="tel" inputmode="tel" placeholder="+1 555 555 5555" autocomplete="tel" />
+          </div>
+        ` : ""}
         <textarea id="smsText" maxlength="1000" placeholder="Type an SMS to ${escapeHtml(params.customerName || "this customer")}"></textarea>
         <div class="actions">
           <button id="sendBtn" type="submit">Send SMS</button>
@@ -2684,11 +2725,12 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
       </form>
     ` : ""}
     ${!params.error && params.messages.length ? `<div class="thread">${rows}</div>` : ""}
-    ${!params.error && !params.messages.length ? `<div class="empty">No SMS messages found for this contact.</div>` : ""}
+    ${!params.error && !params.messages.length ? `<div class="empty">${params.requirePhoneInput ? "No phone was found on this deal. Enter a customer phone number to start a conversation." : "No SMS messages found for this contact."}</div>` : ""}
     ${!params.error ? `
       <script>
         const form = document.getElementById("smsForm");
         const text = document.getElementById("smsText");
+        const phone = document.getElementById("smsPhone");
         const button = document.getElementById("sendBtn");
         const status = document.getElementById("sendStatus");
 
@@ -2698,6 +2740,12 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
           if (!message) {
             status.className = "status err";
             status.textContent = "Enter a message first.";
+            return;
+          }
+          const phoneNumber = phone ? phone.value.trim() : "";
+          if (phone && !phoneNumber) {
+            status.className = "status err";
+            status.textContent = "Enter the customer phone number.";
             return;
           }
 
@@ -2714,7 +2762,8 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
               },
               body: JSON.stringify({
                 dealId: ${JSON.stringify(params.dealId)},
-                text: message
+                text: message,
+                phoneNumber
               })
             });
             const json = await response.json();
@@ -2724,6 +2773,7 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
             status.className = "status ok";
             status.textContent = "Sent. Conversation opened in Bitrix.";
             text.value = "";
+            if (phone) phone.value = "";
             window.setTimeout(() => window.location.reload(), 700);
           } catch (error) {
             status.className = "status err";
@@ -2746,7 +2796,13 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
     const phone = customer.customerPhone;
 
     if (!phone) {
-      return res.status(200).send(renderSmsHtml({ dealId, phone: "", messages: [], error: "No phone number found on the contact linked to this deal." }));
+      return res.status(200).send(renderSmsHtml({
+        dealId,
+        phone: "",
+        customerName: customer.customerName,
+        messages: [],
+        requirePhoneInput: true
+      }));
     }
 
     const records = await listTelnyxSmsRecordsByPhone(phone);
@@ -2775,7 +2831,7 @@ app.post("/bitrix/widgets/deal-sms/send", async (req: Request, res: Response) =>
     return res.status(401).json({ ok: false, error: "Invalid inbound secret" });
   }
 
-  const body = req.body as { dealId?: string | number; text?: string };
+  const body = req.body as { dealId?: string | number; text?: string; phoneNumber?: string };
   const dealId = String(body.dealId ?? "").trim();
   const text = String(body.text ?? "").trim();
 
@@ -2785,25 +2841,43 @@ app.post("/bitrix/widgets/deal-sms/send", async (req: Request, res: Response) =>
 
   try {
     const customer = await resolveDealSmsCustomer(dealId);
-    if (!customer.customerPhone) {
-      return res.status(400).json({ ok: false, error: "No phone number found on the contact linked to this deal." });
+    const suppliedPhone = normalizePhoneForSms(String(body.phoneNumber ?? ""));
+    const customerPhone = customer.customerPhone || suppliedPhone;
+
+    if (!customerPhone) {
+      return res.status(400).json({ ok: false, error: "Enter the customer phone number." });
     }
 
-    rememberBitrixPhoneRoute(customer.customerPhone);
+    if (!customer.customerPhone && suppliedPhone) {
+      const existingComments = String(customer.deal.COMMENTS ?? "").trim();
+      const hasPhoneInComments = readPhoneFromText(existingComments) === customerPhone;
+      if (!hasPhoneInComments) {
+        void updateBitrixDealFields({
+          dealId,
+          fields: {
+            COMMENTS: [existingComments, `Phone: ${customerPhone}`].filter(Boolean).join("\n")
+          }
+        }).catch((err: unknown) => {
+          console.error("Failed to persist manual SMS phone on deal", err instanceof Error ? err.message : err);
+        });
+      }
+    }
+
+    rememberBitrixPhoneRoute(customerPhone);
 
     const telnyxResponse = await sendSmsThroughTelnyx({
-      to: customer.customerPhone,
+      to: customerPhone,
       text
     });
     const telnyxMessageId = await saveDealOutboundSmsRecord({
       dealId,
-      customerPhone: customer.customerPhone,
+      customerPhone,
       text,
       telnyxResponse
     });
 
     const bitrixResponse = await sendToBitrixOpenChannel({
-      sourcePhone: customer.customerPhone,
+      sourcePhone: customerPhone,
       destinationPhone: config.telnyxFromNumber,
       text: `Outbound SMS sent from Deal ${dealId}:\n${text}`,
       externalMessageId: `deal-${dealId}-${telnyxMessageId}`,
@@ -2813,11 +2887,11 @@ app.post("/bitrix/widgets/deal-sms/send", async (req: Request, res: Response) =>
       dealId
     });
     rememberBitrixSession(bitrixResponse);
-    rememberBitrixPhoneRoute(customer.customerPhone, bitrixResponse);
+    rememberBitrixPhoneRoute(customerPhone, bitrixResponse);
     const answer = await answerBitrixSessionIfPossible(bitrixResponse);
     await saveDealOutboundSmsRecord({
       dealId,
-      customerPhone: customer.customerPhone,
+      customerPhone,
       text,
       telnyxResponse,
       bitrixResponse
@@ -2828,7 +2902,7 @@ app.post("/bitrix/widgets/deal-sms/send", async (req: Request, res: Response) =>
       dealId,
       customer: {
         name: customer.customerName,
-        phone: customer.customerPhone,
+        phone: customerPhone,
         email: customer.customerEmail
       },
       telnyx: telnyxResponse,
