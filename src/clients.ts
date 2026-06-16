@@ -422,6 +422,29 @@ export async function bindBitrixDealVendorsWidget() {
   };
 }
 
+export async function bindBitrixAvailableVendorsWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/available-vendors`;
+  const placement = "CRM_DEAL_DETAIL_TAB";
+
+  await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  }).catch(() => null);
+
+  const bind = await callBitrixMethod("placement.bind", {
+    PLACEMENT: placement,
+    HANDLER: handler,
+    TITLE: "Available Vendors"
+  });
+
+  return {
+    ok: true,
+    placement,
+    handler,
+    bind
+  };
+}
+
 export async function unbindBitrixCallCardWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/call-card`;
   const placement = "CALL_CARD";
@@ -478,6 +501,10 @@ export async function createBitrixDeal(fields: Record<string, unknown>) {
 
 export async function markBitrixAppInstalled() {
   return callBitrixMethod("app.install", {});
+}
+
+export async function getBitrixAppInfo() {
+  return callBitrixMethod<{ result?: Record<string, unknown> }>("app.info", {});
 }
 
 export async function getBitrixLeadById(leadId: string) {

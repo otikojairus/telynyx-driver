@@ -10,6 +10,7 @@ import {
   bindBitrixDealCardDatesWidget,
   bindBitrixDealFundingWidget,
   bindBitrixDealVendorsWidget,
+  bindBitrixAvailableVendorsWidget,
   bindBitrixDealSmsWidget,
   bindBitrixLeadEvents,
   bindBitrixTelephonyEvents,
@@ -25,6 +26,7 @@ import {
   getBitrixLeadById,
   getBitrixOpenLineHistory,
   getBitrixConnectorStatus,
+  getBitrixAppInfo,
   normalizeSmsParticipantId,
   registerBitrixConnector,
   sendBitrixInternalMessage,
@@ -2463,7 +2465,7 @@ app.all("/bitrix/widgets/deal-funding", async (req: Request, res: Response) => {
   }
 });
 
-app.all("/bitrix/widgets/deal-vendors", async (req: Request, res: Response) => {
+async function renderDealVendorsWidget(req: Request, res: Response) {
   const placementOptions = parsePlacementOptions({
     PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
   });
@@ -2521,7 +2523,10 @@ app.all("/bitrix/widgets/deal-vendors", async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : "Vendor lookup could not be loaded."
     }));
   }
-});
+}
+
+app.all("/bitrix/widgets/deal-vendors", renderDealVendorsWidget);
+app.all("/bitrix/widgets/available-vendors", renderDealVendorsWidget);
 
 const stageColorCache = new Map<string, string>();
 
@@ -3382,6 +3387,19 @@ app.post("/bitrix/widgets/deal-vendors/register", async (_req: Request, res: Res
   }
 });
 
+app.post("/bitrix/widgets/available-vendors/register", async (_req: Request, res: Response) => {
+  try {
+    const availableVendorsWidgetBind = await bindBitrixAvailableVendorsWidget();
+    return res.status(200).json({ ok: true, availableVendorsWidgetBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix available vendors widget", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Bitrix available vendors widget bind failed"
+    });
+  }
+});
+
 app.get("/bitrix/connector/status", async (_req: Request, res: Response) => {
   try {
     const status = await getBitrixConnectorStatus();
@@ -3389,6 +3407,19 @@ app.get("/bitrix/connector/status", async (_req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to read Bitrix connector status", error);
     return res.status(500).json({ ok: false, error: "Bitrix connector status failed" });
+  }
+});
+
+app.get("/bitrix/app/info", async (_req: Request, res: Response) => {
+  try {
+    const appInfo = await getBitrixAppInfo();
+    return res.status(200).json({ ok: true, appInfo });
+  } catch (error) {
+    console.error("Failed to read Bitrix app info", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Bitrix app info failed"
+    });
   }
 });
 
