@@ -376,6 +376,42 @@ export async function bindBitrixDealSmsWidget() {
   };
 }
 
+export async function bindBitrixDealComposeSmsWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-compose-sms`;
+  const placement = "CRM_DEAL_DETAIL_TAB";
+
+  const unbind = await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  }).catch((error) => ({
+    error: error instanceof Error ? error.message : "Placement unbind failed"
+  }));
+
+  try {
+    const bind = await callBitrixMethod("placement.bind", {
+      PLACEMENT: placement,
+      HANDLER: handler,
+      TITLE: "Compose SMS"
+    });
+
+    return {
+      ok: true,
+      placement,
+      handler,
+      unbind,
+      bind
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      placement,
+      handler,
+      unbind,
+      error: error instanceof Error ? error.message : "Placement bind failed"
+    };
+  }
+}
+
 export async function bindBitrixDealFundingWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-funding`;
   const placement = "CRM_DEAL_DETAIL_TAB";

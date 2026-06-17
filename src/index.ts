@@ -8,6 +8,7 @@ import {
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
   bindBitrixDealCardDatesWidget,
+  bindBitrixDealComposeSmsWidget,
   bindBitrixDealFundingWidget,
   bindBitrixDealVendorsWidget,
   bindBitrixAvailableVendorsWidget,
@@ -1216,6 +1217,25 @@ async function saveDealOutboundSmsRecord(params: {
   return telnyxMessageId;
 }
 
+type SmsConversationMessage = {
+  direction: "inbound" | "outbound";
+  text: string;
+  at: string;
+};
+
+function mapSmsRecordsToConversationMessages(
+  records: TelnyxWebhookRecord[],
+  customerPhone: string
+): SmsConversationMessage[] {
+  return records
+    .filter((r) => r.text)
+    .map((r) => ({
+      direction: (r.from === customerPhone ? "inbound" : "outbound") as "inbound" | "outbound",
+      text: r.text,
+      at: r.receivedAt
+    }));
+}
+
 async function forwardBitrixReplyToThirdParty(params: {
   webhookUrl: string;
   phone: string;
@@ -2288,6 +2308,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
     const dealFundingWidgetBind = await bindBitrixDealFundingWidget();
     const dealVendorsWidgetBind = await bindBitrixDealVendorsWidget();
     const dealSmsWidgetBind = await bindBitrixDealSmsWidget();
+    const dealComposeSmsWidgetBind = await bindBitrixDealComposeSmsWidget();
     const dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
     const callCardWidgetBind = await bindBitrixCallCardWidget();
     const status = await getBitrixConnectorStatus();
@@ -2306,7 +2327,7 @@ app.all("/bitrix/install", async (req: Request, res: Response) => {
         <body style="font-family: sans-serif;">
           <h2>Telnyx SMS connector installed</h2>
           <p>Connector registered and activated for line ${config.bitrixLineId}.</p>
-          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, telephonyEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealVendorsWidgetBind, dealSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
+          <pre>${JSON.stringify({ register, activate, eventBind, dealEventBind, leadEventBind, telephonyEventBind, dealPaymentWidgetBind, dealFundingWidgetBind, dealVendorsWidgetBind, dealSmsWidgetBind, dealComposeSmsWidgetBind, dealCardDatesWidgetBind, callCardWidgetBind, status, appInstall }, null, 2)}</pre>
           <script>
             BX24.init(function() {
               BX24.installFinish();
@@ -2373,6 +2394,9 @@ app.post("/bitrix/connector/register", async (_req: Request, res: Response) => {
 
     step = "placement.bind:deal-sms";
     result.dealSmsWidgetBind = await bindBitrixDealSmsWidget();
+
+    step = "placement.bind:deal-compose-sms";
+    result.dealComposeSmsWidgetBind = await bindBitrixDealComposeSmsWidget();
 
     step = "placement.bind:deal-card-dates";
     result.dealCardDatesWidgetBind = await bindBitrixDealCardDatesWidget();
@@ -2755,13 +2779,7 @@ app.all("/bitrix/widgets/deal-sms", async (req: Request, res: Response) => {
     }
 
     const records = await listTelnyxSmsRecordsByPhone(phone);
-    const messages = records
-      .filter((r) => r.text)
-      .map((r) => ({
-        direction: (r.from === phone ? "inbound" : "outbound") as "inbound" | "outbound",
-        text: r.text,
-        at: r.receivedAt
-      }));
+    const messages = mapSmsRecordsToConversationMessages(records, phone);
 
     return res.status(200).send(renderSmsHtml({
       dealId,
@@ -2842,6 +2860,251 @@ app.post("/bitrix/widgets/deal-sms/send", async (req: Request, res: Response) =>
     });
   } catch (error) {
     console.error("Failed to send deal SMS", error);
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "SMS send failed" });
+  }
+});
+
+app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) => {
+  const placementOptions = parsePlacementOptions({
+    PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
+  });
+  const requestBody = req.body as Record<string, unknown>;
+  const dealId = String(placementOptions.ID ?? requestBody.dealId ?? req.query.dealId ?? "").trim();
+  const rawPhone = String(requestBody.phone ?? req.query.phone ?? "").trim();
+  const phone = normalizePhoneForSms(rawPhone);
+
+  function renderComposeSmsHtml(params: {
+    dealId: string;
+    rawPhone: string;
+    phone: string;
+    messages: SmsConversationMessage[];
+    error?: string;
+  }): string {
+    const rows = params.messages.map((m) => {
+      const isMine = m.direction === "outbound";
+      const time = new Date(m.at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return `<div class="msg ${isMine ? "out" : "in"}"><div class="bubble">${escapeHtml(m.text)}</div><div class="ts">${time}</div></div>`;
+    }).join("");
+
+    return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compose SMS</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body { margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; background: #f6f8fb; color: #1a1a1a; }
+      .header { margin-bottom: 10px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+      .header h1 { font-size: 15px; margin: 0 0 2px; }
+      .header .sub { color: #667085; font-size: 12px; overflow-wrap: anywhere; }
+      .badge { flex: 0 0 auto; border: 1px solid #bfdbfe; color: #175cd3; background: #eff6ff; border-radius: 999px; padding: 4px 8px; font-size: 11px; }
+      .panel { background: #fff; border: 1px solid #dfe5ef; border-radius: 8px; padding: 10px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .lookup { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+      label { display: block; color: #344054; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+      input, textarea { display: block; width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.4; color: #101828; background: #fff; }
+      input:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
+      textarea { min-height: 76px; resize: vertical; }
+      button { min-height: 36px; border: 0; border-radius: 7px; background: #0b66ff; color: #fff; font-weight: 600; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+      .status { color: #667085; font-size: 12px; min-height: 16px; overflow-wrap: anywhere; }
+      .status.ok { color: #067647; }
+      .status.err { color: #b42318; }
+      .thread { display: flex; flex-direction: column; gap: 6px; }
+      .msg { display: flex; flex-direction: column; max-width: 80%; }
+      .msg.out { align-self: flex-end; align-items: flex-end; }
+      .msg.in { align-self: flex-start; align-items: flex-start; }
+      .bubble { padding: 8px 11px; border-radius: 14px; line-height: 1.4; word-break: break-word; }
+      .out .bubble { background: #0b66ff; color: #fff; border-bottom-right-radius: 4px; }
+      .in .bubble { background: #fff; border: 1px solid #dfe5ef; border-bottom-left-radius: 4px; }
+      .ts { font-size: 10px; color: #99a0ad; margin-top: 2px; padding: 0 4px; }
+      .empty { color: #667085; font-size: 13px; padding: 8px 0; }
+      .error { color: #b42318; background: #fffbfa; border: 1px solid #fecdca; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+      @media (max-width: 420px) {
+        .lookup { grid-template-columns: 1fr; }
+        button { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>Compose SMS</h1>
+        <div class="sub">${params.phone ? `${escapeHtml(params.phone)} to ${escapeHtml(config.telnyxFromNumber)}` : "Start or continue a conversation by phone number."}</div>
+      </div>
+      ${params.dealId ? `<div class="badge">Deal ${escapeHtml(params.dealId)}</div>` : ""}
+    </div>
+
+    <form class="panel lookup" method="GET" action="/bitrix/widgets/deal-compose-sms">
+      <input type="hidden" name="dealId" value="${escapeHtml(params.dealId)}" />
+      <div>
+        <label for="phone">Contact number</label>
+        <input id="phone" name="phone" type="tel" value="${escapeHtml(params.rawPhone || params.phone)}" placeholder="+15551234567" autocomplete="tel" />
+      </div>
+      <button type="submit">Load</button>
+    </form>
+
+    ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
+
+    ${params.phone && !params.error ? `
+      <form class="panel" id="composeSmsForm">
+        <label for="smsText">Message</label>
+        <textarea id="smsText" maxlength="1000" placeholder="Type an SMS to ${escapeHtml(params.phone)}"></textarea>
+        <div class="actions">
+          <button id="sendBtn" type="submit">Send SMS</button>
+          <div class="status" id="sendStatus"></div>
+        </div>
+      </form>
+      ${params.messages.length ? `<div class="thread">${rows}</div>` : `<div class="empty">No SMS history found for this number. Send a message to start the conversation.</div>`}
+    ` : ""}
+
+    ${params.phone && !params.error ? `
+      <script>
+        const form = document.getElementById("composeSmsForm");
+        const text = document.getElementById("smsText");
+        const button = document.getElementById("sendBtn");
+        const status = document.getElementById("sendStatus");
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const message = text.value.trim();
+          if (!message) {
+            status.className = "status err";
+            status.textContent = "Enter a message first.";
+            return;
+          }
+
+          button.disabled = true;
+          status.className = "status";
+          status.textContent = "Sending...";
+
+          try {
+            const response = await fetch("/bitrix/widgets/deal-compose-sms/send", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-inbound-secret": ${JSON.stringify(config.inboundDealWebhookSecret)}
+              },
+              body: JSON.stringify({
+                dealId: ${JSON.stringify(params.dealId)},
+                phone: ${JSON.stringify(params.phone)},
+                text: message
+              })
+            });
+            const json = await response.json();
+            if (!response.ok || !json.ok) {
+              throw new Error(json.error || "SMS send failed");
+            }
+            status.className = "status ok";
+            status.textContent = "Sent.";
+            text.value = "";
+            window.setTimeout(() => {
+              const next = new URL("/bitrix/widgets/deal-compose-sms", window.location.origin);
+              next.searchParams.set("dealId", ${JSON.stringify(params.dealId)});
+              next.searchParams.set("phone", ${JSON.stringify(params.phone)});
+              window.location.href = next.toString();
+            }, 700);
+          } catch (error) {
+            status.className = "status err";
+            status.textContent = error?.message || "SMS send failed";
+            button.disabled = false;
+          }
+        });
+      </script>
+    ` : ""}
+  </body>
+</html>`;
+  }
+
+  if (rawPhone && !phone) {
+    return res.status(200).send(renderComposeSmsHtml({
+      dealId,
+      rawPhone,
+      phone: "",
+      messages: [],
+      error: "Enter a valid phone number."
+    }));
+  }
+
+  try {
+    const records = phone ? await listTelnyxSmsRecordsByPhone(phone) : [];
+    return res.status(200).send(renderComposeSmsHtml({
+      dealId,
+      rawPhone,
+      phone,
+      messages: phone ? mapSmsRecordsToConversationMessages(records, phone) : []
+    }));
+  } catch (error) {
+    console.error("Failed to render compose SMS widget", error);
+    return res.status(200).send(renderComposeSmsHtml({
+      dealId,
+      rawPhone,
+      phone,
+      messages: [],
+      error: error instanceof Error ? error.message : "Compose SMS could not be loaded."
+    }));
+  }
+});
+
+app.post("/bitrix/widgets/deal-compose-sms/send", async (req: Request, res: Response) => {
+  if (!verifyInboundDealSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid inbound secret" });
+  }
+
+  const body = req.body as { dealId?: string | number; phone?: string; text?: string };
+  const dealId = String(body.dealId ?? "").trim();
+  const phone = normalizePhoneForSms(String(body.phone ?? ""));
+  const text = String(body.text ?? "").trim();
+
+  if (!phone || !text) {
+    return res.status(400).json({ ok: false, error: "Missing phone or text" });
+  }
+
+  try {
+    rememberBitrixPhoneRoute(phone);
+
+    const telnyxResponse = await sendSmsThroughTelnyx({
+      to: phone,
+      text
+    });
+    const telnyxMessageId = await saveDealOutboundSmsRecord({
+      dealId: dealId || "manual",
+      customerPhone: phone,
+      text,
+      telnyxResponse
+    });
+
+    const bitrixResponse = await sendToBitrixOpenChannel({
+      sourcePhone: phone,
+      destinationPhone: config.telnyxFromNumber,
+      text: dealId ? `Outbound SMS sent from Deal ${dealId}:\n${text}` : `Outbound SMS sent:\n${text}`,
+      externalMessageId: `deal-compose-${dealId || "manual"}-${telnyxMessageId}`,
+      eventTimestamp: new Date().toISOString(),
+      customerName: phone,
+      dealId: dealId || undefined
+    });
+    rememberBitrixSession(bitrixResponse);
+    rememberBitrixPhoneRoute(phone, bitrixResponse);
+    const answer = await answerBitrixSessionIfPossible(bitrixResponse);
+    await saveDealOutboundSmsRecord({
+      dealId: dealId || "manual",
+      customerPhone: phone,
+      text,
+      telnyxResponse,
+      bitrixResponse
+    });
+
+    return res.status(200).json({
+      ok: true,
+      dealId,
+      phone,
+      telnyx: telnyxResponse,
+      bitrix: bitrixResponse,
+      answer
+    });
+  } catch (error) {
+    console.error("Failed to send compose SMS", error);
     return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : "SMS send failed" });
   }
 });
