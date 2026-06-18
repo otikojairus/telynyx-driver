@@ -267,6 +267,122 @@ export async function bindBitrixTelephonyEvents() {
   return { ok: true, events, handler };
 }
 
+type BitrixCallStatisticRecord = {
+  CALL_ID?: string;
+  CALL_RECORD_URL?: string | null;
+  RECORD_FILE_ID?: number | string | null;
+  CRM_ACTIVITY_ID?: string | number | null;
+  CALL_START_DATE?: string;
+  PHONE_NUMBER?: string;
+  CALL_TYPE?: string | number;
+  CALL_DURATION?: string | number;
+};
+
+function guessRecordingFilename(record: BitrixCallStatisticRecord) {
+  const callId = String(record.CALL_ID ?? "").trim() || "bitrix-call";
+  const start = String(record.CALL_START_DATE ?? "").trim().replace(/[:.]/g, "-");
+  return `${callId}${start ? `-${start}` : ""}.mp3`;
+}
+
+async function fetchBitrixCallStatistic(callId: string) {
+  const response = await callBitrixMethod<{ result?: BitrixCallStatisticRecord[] }>(
+    "voximplant.statistic.get",
+    {
+      FILTER: {
+        CALL_ID: callId
+      },
+      SORT: "ID",
+      ORDER: "DESC"
+    }
+  );
+
+  return response.result?.[0] ?? null;
+}
+
+export async function forwardBitrixCallRecording(params: {
+  callId: string;
+  eventName?: string;
+}) {
+  if (!config.bitrixCallRecordingForwardWebhookUrl) {
+    return {
+      enabled: false,
+      delivered: false
+    };
+  }
+
+  const statistic = await fetchBitrixCallStatistic(params.callId);
+  if (!statistic) {
+    return {
+      enabled: true,
+      delivered: false,
+      error: "call statistic not found",
+      attemptedAt: new Date().toISOString()
+    };
+  }
+
+  const recordingUrl = String(statistic.CALL_RECORD_URL ?? "").trim();
+  if (!recordingUrl) {
+    return {
+      enabled: true,
+      delivered: false,
+      error: "recording url missing",
+      attemptedAt: new Date().toISOString(),
+      statistic
+    };
+  }
+
+  const recordingResponse = await fetch(recordingUrl);
+  if (!recordingResponse.ok) {
+    return {
+      enabled: true,
+      delivered: false,
+      error: `failed to fetch recording: ${recordingResponse.status}`,
+      attemptedAt: new Date().toISOString(),
+      statistic
+    };
+  }
+
+  const contentType = recordingResponse.headers.get("content-type") ?? "audio/mpeg";
+  const contentDisposition = recordingResponse.headers.get("content-disposition") ?? "";
+  const buffer = Buffer.from(await recordingResponse.arrayBuffer());
+  const filename = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1] ?? guessRecordingFilename(statistic);
+  const form = new FormData();
+  form.append("source", "bitrix-call-recording");
+  form.append("call_id", params.callId);
+  form.append("event_name", params.eventName ?? "OnVoximplantCallEnd");
+  form.append("recording_url", recordingUrl);
+  form.append("crm_activity_id", String(statistic.CRM_ACTIVITY_ID ?? ""));
+  form.append("phone_number", String(statistic.PHONE_NUMBER ?? ""));
+  form.append("call_type", String(statistic.CALL_TYPE ?? ""));
+  form.append("call_duration", String(statistic.CALL_DURATION ?? ""));
+  form.append("recording", new Blob([buffer], { type: contentType }), filename);
+
+  try {
+    const response = await fetch(config.bitrixCallRecordingForwardWebhookUrl, {
+      method: "POST",
+      body: form
+    });
+
+    return {
+      enabled: true,
+      delivered: response.ok,
+      url: config.bitrixCallRecordingForwardWebhookUrl,
+      statusCode: response.status,
+      attemptedAt: new Date().toISOString(),
+      statistic
+    };
+  } catch (error) {
+    return {
+      enabled: true,
+      delivered: false,
+      url: config.bitrixCallRecordingForwardWebhookUrl,
+      error: error instanceof Error ? error.message : "Unknown recording forward error",
+      attemptedAt: new Date().toISOString(),
+      statistic
+    };
+  }
+}
+
 export async function bindBitrixDealPaymentWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-payment`;
   const legacyPlacements = ["CRM_DEAL_DETAIL_ACTIVITY", "CRM_DEAL_DETAIL_TAB", "CRM_DEAL_DETAIL_TOOLBAR"];

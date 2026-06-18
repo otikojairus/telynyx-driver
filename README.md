@@ -564,6 +564,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `BALTO_DEFAULT_AGENT_EMAIL` / `BALTO_DEFAULT_VOIP_USER_ID`: Optional fallback agent identity.
 - `BALTO_START_EVENT_TYPES` / `BALTO_STOP_EVENT_TYPES`: Comma-separated Telnyx event names that trigger Balto start/stop. Balto start is still guarded so ringing/initiated events cannot start a desktop call.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
+- `BITRIX_CALL_RECORDING_FORWARD_WEBHOOK_URL`: When Bitrix emits `OnVoximplantCallEnd`, the app looks up the matching `CALL_RECORD_URL`, downloads the audio, and POSTs it to this endpoint as `multipart/form-data` with a `recording` file plus metadata fields.
 - `BITRIX_DEAL_CLIENT_PRICE_FIELD` (optional): Bitrix deal field code where final client-facing price is stored.
 - `BITRIX_DEAL_DEPOSIT_LINK_FIELD` (optional): Bitrix deal field code where deposit payment link is stored.
 - `BITRIX_DEAL_CALLOUT_LINK_FIELD` (optional): Bitrix deal field code where callout fee payment link is stored.

@@ -17,6 +17,7 @@ import {
   bindBitrixTelephonyEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
+  forwardBitrixCallRecording,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
   getBitrixContactById,
@@ -4283,7 +4284,15 @@ app.post("/webhooks/bitrix/telephony", async (req: Request, res: Response) => {
 
   try {
     const balto = await handleBaltoBitrixTelephonyEvent(event);
-    return res.status(200).json({ ok: true, balto });
+    const recording =
+      eventName === "ONVOXIMPLANTCALLEND"
+        ? await forwardBitrixCallRecording({
+            callId: String(event.data?.CALL_ID ?? "").trim(),
+            eventName: event.event
+          })
+        : { enabled: false, delivered: false };
+
+    return res.status(200).json({ ok: true, balto, recording });
   } catch (error) {
     console.error("Failed to handle Bitrix telephony Balto event", {
       event: event.event,
