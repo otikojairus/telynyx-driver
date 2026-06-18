@@ -3650,6 +3650,19 @@ app.post("/bitrix/widgets/deal-vendors/register", async (_req: Request, res: Res
   }
 });
 
+app.post("/bitrix/widgets/deal-compose-sms/register", async (_req: Request, res: Response) => {
+  try {
+    const dealComposeSmsWidgetBind = await bindBitrixDealComposeSmsWidget();
+    return res.status(200).json({ ok: true, dealComposeSmsWidgetBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix compose SMS widget", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Bitrix compose SMS widget bind failed"
+    });
+  }
+});
+
 app.post("/bitrix/widgets/available-vendors/register", async (_req: Request, res: Response) => {
   try {
     const availableVendorsWidgetBind = await bindBitrixAvailableVendorsWidget();

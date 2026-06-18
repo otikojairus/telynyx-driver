@@ -447,6 +447,13 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - Request body: None.
 - Response: `{ ok, leadEventBind }`.
 
+### `POST /bitrix/widgets/deal-compose-sms/register`
+
+- Purpose: Bind only the `Compose SMS` Deal placement without touching any other active widgets.
+- Auth: None.
+- Request body: None.
+- Response: `{ ok, dealComposeSmsWidgetBind }`.
+
 ### `GET /bitrix/connector/status`
 
 - Purpose: Read Bitrix connector status.
