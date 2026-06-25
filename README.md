@@ -48,6 +48,7 @@ DATABASE_URL=postgresql://telnyx:telnyx@postgres:5432/telnyx
 CONTACT_IMPORT_SECRET=change_me
 CONTACT_IMPORT_SOURCE_URL=
 CONTACT_IMPORT_ORIGINATOR_ID=global_node_crm
+BITRIX_IMPORT_MIN_INTERVAL_MS=1500
 
 POSTGRES_DB=telnyx
 POSTGRES_USER=telnyx
@@ -237,6 +238,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 
 - Purpose: Start an asynchronous Bitrix contact import from an external CRM export endpoint.
 - Auth: `x-import-secret: ${CONTACT_IMPORT_SECRET}` or `Authorization: Bearer ${CONTACT_IMPORT_SECRET}`.
+- Notes: `BITRIX_IMPORT_MIN_INTERVAL_MS` controls the minimum delay between Bitrix API calls during import. A value around `1500` ms is a conservative default and usually lands near one contact every ~4 seconds, depending on how many lookup calls each contact needs.
 - Request body:
 
 ```json

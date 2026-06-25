@@ -17,6 +17,7 @@ export const config = {
   contactImportSecret: process.env.CONTACT_IMPORT_SECRET ?? "",
   contactImportSourceUrl: process.env.CONTACT_IMPORT_SOURCE_URL ?? "",
   contactImportOriginatorId: process.env.CONTACT_IMPORT_ORIGINATOR_ID ?? "global_node_crm",
+  bitrixImportMinIntervalMs: Number(process.env.BITRIX_IMPORT_MIN_INTERVAL_MS ?? 1500),
   bitrixClientId: process.env.BITRIX_CLIENT_ID ?? "",
   bitrixClientSecret: process.env.BITRIX_CLIENT_SECRET ?? "",
   bitrixConnectorId: requireEnv("BITRIX_CONNECTOR_ID"),

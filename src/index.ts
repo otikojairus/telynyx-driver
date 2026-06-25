@@ -163,6 +163,7 @@ type ContactImportJob = {
 };
 
 const contactImportJobs = new Map<string, ContactImportJob>();
+let lastBitrixImportRequestAt = 0;
 
 function isDuplicate(set: Set<string>, key: string): boolean {
   if (set.has(key)) {
@@ -1219,6 +1220,10 @@ function trimArray<T>(items: T[], maxEntries: number): void {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function trimContactImportJobs(maxEntries = 25): void {
   if (contactImportJobs.size <= maxEntries) {
     return;
@@ -1249,6 +1254,41 @@ function normalizeExternalCrmContacts(payload: unknown): ExternalCrmContact[] {
   }
 
   return [];
+}
+
+function isBitrixQueryLimitExceeded(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /\bQUERY_LIMIT_EXCEEDED\b/i.test(error.message);
+}
+
+async function runBitrixImportCall<T>(action: () => Promise<T>): Promise<T> {
+  const minIntervalMs = Math.max(250, config.bitrixImportMinIntervalMs);
+  const maxAttempts = 6;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const waitBeforeCall = Math.max(0, lastBitrixImportRequestAt + minIntervalMs - Date.now());
+    if (waitBeforeCall > 0) {
+      await sleep(waitBeforeCall);
+    }
+
+    lastBitrixImportRequestAt = Date.now();
+
+    try {
+      return await action();
+    } catch (error) {
+      if (!isBitrixQueryLimitExceeded(error) || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const backoffMs = Math.min(30000, 1500 * 2 ** (attempt - 1));
+      await sleep(backoffMs);
+    }
+  }
+
+  throw new Error("Bitrix import call exhausted retries");
 }
 
 function buildContactImportComments(contact: ExternalCrmContact): string {
@@ -1315,13 +1355,15 @@ async function findExistingBitrixContactForImport(params: {
 > {
   const externalId = String(params.contact.contact_id ?? "").trim();
   if (params.originatorId && externalId) {
-    const byOrigin = await listBitrixContacts({
-      filter: {
-        ORIGINATOR_ID: params.originatorId,
-        ORIGIN_ID: externalId
-      },
-      select: ["ID"]
-    });
+    const byOrigin = await runBitrixImportCall(() =>
+      listBitrixContacts({
+        filter: {
+          ORIGINATOR_ID: params.originatorId,
+          ORIGIN_ID: externalId
+        },
+        select: ["ID"]
+      })
+    );
     const contactId = normalizeBitrixEntityId((byOrigin.result ?? [])[0]?.ID);
     if (contactId) {
       return { contactId, matchedBy: "origin" };
@@ -1330,11 +1372,13 @@ async function findExistingBitrixContactForImport(params: {
 
   const phone = normalizePhoneForSms(String(params.contact.phone ?? ""));
   if (phone) {
-    const duplicates = await findBitrixDuplicatesByCommunication({
-      entityType: "CONTACT",
-      type: "PHONE",
-      values: [phone]
-    });
+    const duplicates = await runBitrixImportCall(() =>
+      findBitrixDuplicatesByCommunication({
+        entityType: "CONTACT",
+        type: "PHONE",
+        values: [phone]
+      })
+    );
     const matches = Array.from(
       new Set(((duplicates.result ?? {}).CONTACT ?? []).map((value) => normalizeBitrixEntityId(value)).filter(Boolean))
     );
@@ -1348,11 +1392,13 @@ async function findExistingBitrixContactForImport(params: {
 
   const email = String(params.contact.email ?? "").trim().toLowerCase();
   if (email) {
-    const duplicates = await findBitrixDuplicatesByCommunication({
-      entityType: "CONTACT",
-      type: "EMAIL",
-      values: [email]
-    });
+    const duplicates = await runBitrixImportCall(() =>
+      findBitrixDuplicatesByCommunication({
+        entityType: "CONTACT",
+        type: "EMAIL",
+        values: [email]
+      })
+    );
     const matches = Array.from(
       new Set(((duplicates.result ?? {}).CONTACT ?? []).map((value) => normalizeBitrixEntityId(value)).filter(Boolean))
     );
@@ -1435,10 +1481,12 @@ async function runContactImportJob(
 
         if (existing.contactId) {
           if (!params.dryRun && params.overwriteExisting) {
-            await updateBitrixContact({
-              contactId: existing.contactId,
-              fields
-            });
+            await runBitrixImportCall(() =>
+              updateBitrixContact({
+                contactId: existing.contactId,
+                fields
+              })
+            );
           }
           job.totals.processed += 1;
           job.totals.updated += 1;
@@ -1446,7 +1494,7 @@ async function runContactImportJob(
         }
 
         if (!params.dryRun) {
-          await createBitrixContact(fields);
+          await runBitrixImportCall(() => createBitrixContact(fields));
         }
         job.totals.processed += 1;
         job.totals.created += 1;
