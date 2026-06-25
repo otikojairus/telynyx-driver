@@ -45,6 +45,9 @@ PORT=3000
 PUBLIC_BASE_URL=https://your-public-middleware-url
 DATA_DIR=data
 DATABASE_URL=postgresql://telnyx:telnyx@postgres:5432/telnyx
+CONTACT_IMPORT_SECRET=change_me
+CONTACT_IMPORT_SOURCE_URL=
+CONTACT_IMPORT_ORIGINATOR_ID=global_node_crm
 
 POSTGRES_DB=telnyx
 POSTGRES_USER=telnyx
@@ -70,6 +73,7 @@ BITRIX_QUOTE_PRESENTED_PAYMENT_TYPE=deposit
 
 TELNYX_API_KEY=your_telnyx_api_key
 TELNYX_FROM_NUMBER=+18447500107
+TELNYX_NUMBERS_CSV_PATH=numbers.csv
 TELNYX_FORWARD_WEBHOOK_URL=
 TELNYX_CALL_FORWARD_WEBHOOK_URL=
 TELNYX_WEBHOOK_STORE_LIMIT=1000
@@ -85,6 +89,8 @@ WAVE_WEBHOOK_SECRET=
 ```
 
 `PUBLIC_BASE_URL` must be reachable by both Bitrix and Telnyx over HTTPS.
+
+The compose SMS widget can load a sender-number dropdown from a Telnyx CSV export. Point `TELNYX_NUMBERS_CSV_PATH` at the CSV file and it will use the `number_val_e164` column to populate the menu.
 
 ## Run
 
@@ -226,6 +232,38 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
   "text": "Hello from middleware"
 }
 ```
+
+### `POST /admin/bitrix/import-contacts`
+
+- Purpose: Start an asynchronous Bitrix contact import from an external CRM export endpoint.
+- Auth: `x-import-secret: ${CONTACT_IMPORT_SECRET}` or `Authorization: Bearer ${CONTACT_IMPORT_SECRET}`.
+- Request body:
+
+```json
+{
+  "sourceUrl": "https://global-node.example.com/api/webhooks/crm-data?secret=...",
+  "dryRun": false,
+  "maxContacts": 100,
+  "originatorId": "global_node_crm",
+  "overwriteExisting": true
+}
+```
+
+- Response:
+
+```json
+{
+  "ok": true,
+  "jobId": "uuid",
+  "status": "queued",
+  "statusUrl": "/admin/bitrix/import-contacts/uuid"
+}
+```
+
+### `GET /admin/bitrix/import-contacts/:jobId`
+
+- Purpose: Poll import progress and final counts.
+- Auth: Same as the start endpoint.
 
 - Response: `{ ok, telnyx }` on success.
 

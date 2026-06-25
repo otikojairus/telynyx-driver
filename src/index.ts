@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import axios from "axios";
+import fs from "fs";
 import express, { Request, Response } from "express";
+import path from "path";
 import { config } from "./config";
 import { forwardBitrixDealRecord, saveBitrixDealRecord } from "./bitrixDealStore";
 import {
@@ -17,12 +19,15 @@ import {
   bindBitrixTelephonyEvents,
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
+  createBitrixContact,
   forwardBitrixCallRecording,
+  findBitrixDuplicatesByCommunication,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
   getBitrixContactById,
   listBitrixDealCategories,
   listBitrixDealFields,
+  listBitrixContacts,
   listBitrixStatuses,
   getBitrixDealById,
   getBitrixLeadById,
@@ -38,6 +43,7 @@ import {
   bindBitrixCallCardWidget,
   createBitrixDeal,
   unbindBitrixCallCardWidget,
+  updateBitrixContact,
   updateBitrixDealFields,
   updateBitrixDealStage,
   getBitrixUserById
@@ -112,6 +118,52 @@ const recentBitrixDealEvents: Array<{
   body: BitrixDealEvent;
 }> = [];
 
+type ExternalCrmContact = {
+  _id?: string;
+  contact_id?: string;
+  business_name?: string;
+  created_at?: string;
+  email?: string;
+  extra_fields?: Record<string, unknown>;
+  first_name?: string;
+  ghl_created_at?: string;
+  last_activity?: string;
+  last_name?: string;
+  phone?: string;
+  source?: string;
+  tags?: string[];
+  tags_raw?: string;
+  updated_at?: string;
+};
+
+type ContactImportJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  sourceUrl: string;
+  dryRun: boolean;
+  maxContacts?: number;
+  originatorId: string;
+  overwriteExisting: boolean;
+  totals: {
+    fetched: number;
+    processed: number;
+    created: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+  };
+  errors: Array<{
+    contactId: string;
+    phone: string;
+    email: string;
+    reason: string;
+  }>;
+};
+
+const contactImportJobs = new Map<string, ContactImportJob>();
+
 function isDuplicate(set: Set<string>, key: string): boolean {
   if (set.has(key)) {
     return true;
@@ -148,6 +200,17 @@ function verifyThirdPartyWebhookSecret(req: Request): boolean {
   }
   const incoming = String(req.headers["x-thirdparty-secret"] ?? "");
   return incoming === config.thirdPartyWebhookSecret;
+}
+
+function verifyContactImportSecret(req: Request): boolean {
+  const expected = config.contactImportSecret.trim();
+  if (!expected) {
+    return false;
+  }
+
+  const fromHeader = String(req.headers["x-import-secret"] ?? "").trim();
+  const fromBearer = String(req.headers.authorization ?? "").match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? "";
+  return fromHeader === expected || fromBearer === expected;
 }
 
 function verifyTelnyxSignature(req: Request): boolean {
@@ -1150,6 +1213,271 @@ function normalizePhoneForSms(value: string): string {
   return `+${digits}`;
 }
 
+function trimArray<T>(items: T[], maxEntries: number): void {
+  if (items.length > maxEntries) {
+    items.splice(0, items.length - maxEntries);
+  }
+}
+
+function trimContactImportJobs(maxEntries = 25): void {
+  if (contactImportJobs.size <= maxEntries) {
+    return;
+  }
+
+  const first = contactImportJobs.keys().next().value;
+  if (first) {
+    contactImportJobs.delete(first);
+  }
+}
+
+function normalizeExternalCrmContacts(payload: unknown): ExternalCrmContact[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const top = payload as Record<string, unknown>;
+  if (Array.isArray(top.contacts)) {
+    return top.contacts.filter((item): item is ExternalCrmContact => Boolean(item && typeof item === "object"));
+  }
+
+  const nestedData = top.data;
+  if (nestedData && typeof nestedData === "object") {
+    const nestedContacts = (nestedData as Record<string, unknown>).contacts;
+    if (Array.isArray(nestedContacts)) {
+      return nestedContacts.filter((item): item is ExternalCrmContact => Boolean(item && typeof item === "object"));
+    }
+  }
+
+  return [];
+}
+
+function buildContactImportComments(contact: ExternalCrmContact): string {
+  const lines = [
+    "Imported from external CRM",
+    contact.contact_id ? `External contact ID: ${contact.contact_id}` : "",
+    contact.source ? `Source: ${contact.source}` : "",
+    contact.tags_raw ? `Tags: ${contact.tags_raw}` : "",
+    contact.ghl_created_at ? `GHL created at: ${contact.ghl_created_at}` : "",
+    contact.last_activity ? `Last activity: ${contact.last_activity}` : "",
+    contact.created_at ? `Export created at: ${contact.created_at}` : "",
+    contact.updated_at ? `Export updated at: ${contact.updated_at}` : ""
+  ]
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function buildBitrixContactFields(contact: ExternalCrmContact, originatorId: string): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  const firstName = String(contact.first_name ?? "").trim();
+  const lastName = String(contact.last_name ?? "").trim();
+  const businessName = String(contact.business_name ?? "").trim();
+  const email = String(contact.email ?? "").trim();
+  const phone = normalizePhoneForSms(String(contact.phone ?? ""));
+  const comments = buildContactImportComments(contact);
+
+  if (firstName) {
+    fields.NAME = firstName;
+  }
+  if (lastName) {
+    fields.LAST_NAME = lastName;
+  }
+  if (businessName) {
+    fields.COMPANY_TITLE = businessName;
+  }
+  if (email) {
+    fields.EMAIL = [{ VALUE: email, VALUE_TYPE: "WORK" }];
+  }
+  if (phone) {
+    fields.PHONE = [{ VALUE: phone, VALUE_TYPE: "WORK" }];
+  }
+  if (comments) {
+    fields.COMMENTS = comments;
+  }
+  if (contact.source) {
+    fields.SOURCE_DESCRIPTION = String(contact.source).trim();
+  }
+  if (originatorId && contact.contact_id) {
+    fields.ORIGINATOR_ID = originatorId;
+    fields.ORIGIN_ID = String(contact.contact_id).trim();
+  }
+
+  return fields;
+}
+
+async function findExistingBitrixContactForImport(params: {
+  contact: ExternalCrmContact;
+  originatorId: string;
+}): Promise<
+  | { contactId: string; matchedBy: "origin" | "phone" | "email" }
+  | { contactId: ""; matchedBy: "none" | "ambiguous" }
+> {
+  const externalId = String(params.contact.contact_id ?? "").trim();
+  if (params.originatorId && externalId) {
+    const byOrigin = await listBitrixContacts({
+      filter: {
+        ORIGINATOR_ID: params.originatorId,
+        ORIGIN_ID: externalId
+      },
+      select: ["ID"]
+    });
+    const contactId = normalizeBitrixEntityId((byOrigin.result ?? [])[0]?.ID);
+    if (contactId) {
+      return { contactId, matchedBy: "origin" };
+    }
+  }
+
+  const phone = normalizePhoneForSms(String(params.contact.phone ?? ""));
+  if (phone) {
+    const duplicates = await findBitrixDuplicatesByCommunication({
+      entityType: "CONTACT",
+      type: "PHONE",
+      values: [phone]
+    });
+    const matches = Array.from(
+      new Set(((duplicates.result ?? {}).CONTACT ?? []).map((value) => normalizeBitrixEntityId(value)).filter(Boolean))
+    );
+    if (matches.length === 1) {
+      return { contactId: matches[0], matchedBy: "phone" };
+    }
+    if (matches.length > 1) {
+      return { contactId: "", matchedBy: "ambiguous" };
+    }
+  }
+
+  const email = String(params.contact.email ?? "").trim().toLowerCase();
+  if (email) {
+    const duplicates = await findBitrixDuplicatesByCommunication({
+      entityType: "CONTACT",
+      type: "EMAIL",
+      values: [email]
+    });
+    const matches = Array.from(
+      new Set(((duplicates.result ?? {}).CONTACT ?? []).map((value) => normalizeBitrixEntityId(value)).filter(Boolean))
+    );
+    if (matches.length === 1) {
+      return { contactId: matches[0], matchedBy: "email" };
+    }
+    if (matches.length > 1) {
+      return { contactId: "", matchedBy: "ambiguous" };
+    }
+  }
+
+  return { contactId: "", matchedBy: "none" };
+}
+
+async function fetchExternalCrmContacts(sourceUrl: string): Promise<ExternalCrmContact[]> {
+  const response = await axios.get(sourceUrl, {
+    timeout: 60000,
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  return normalizeExternalCrmContacts(response.data);
+}
+
+async function runContactImportJob(
+  jobId: string,
+  params: {
+    sourceUrl: string;
+    dryRun: boolean;
+    maxContacts?: number;
+    originatorId: string;
+    overwriteExisting: boolean;
+  }
+): Promise<void> {
+  const job = contactImportJobs.get(jobId);
+  if (!job) {
+    return;
+  }
+
+  job.status = "running";
+
+  try {
+    const importedContacts = await fetchExternalCrmContacts(params.sourceUrl);
+    job.totals.fetched = importedContacts.length;
+    const contacts = typeof params.maxContacts === "number" && params.maxContacts > 0
+      ? importedContacts.slice(0, params.maxContacts)
+      : importedContacts;
+
+    for (const contact of contacts) {
+      const phone = normalizePhoneForSms(String(contact.phone ?? ""));
+      const email = String(contact.email ?? "").trim().toLowerCase();
+      const externalId = String(contact.contact_id ?? "").trim();
+      const fields = buildBitrixContactFields(contact, params.originatorId);
+
+      if (!Object.keys(fields).length) {
+        job.totals.processed += 1;
+        job.totals.skipped += 1;
+        continue;
+      }
+
+      try {
+        const existing = await findExistingBitrixContactForImport({
+          contact,
+          originatorId: params.originatorId
+        });
+
+        if (existing.matchedBy === "ambiguous") {
+          job.totals.processed += 1;
+          job.totals.skipped += 1;
+          job.errors.push({
+            contactId: externalId,
+            phone,
+            email,
+            reason: "Multiple Bitrix contacts matched by phone or email"
+          });
+          trimArray(job.errors, 50);
+          continue;
+        }
+
+        if (existing.contactId) {
+          if (!params.dryRun && params.overwriteExisting) {
+            await updateBitrixContact({
+              contactId: existing.contactId,
+              fields
+            });
+          }
+          job.totals.processed += 1;
+          job.totals.updated += 1;
+          continue;
+        }
+
+        if (!params.dryRun) {
+          await createBitrixContact(fields);
+        }
+        job.totals.processed += 1;
+        job.totals.created += 1;
+      } catch (error) {
+        job.totals.processed += 1;
+        job.totals.failed += 1;
+        job.errors.push({
+          contactId: externalId,
+          phone,
+          email,
+          reason: error instanceof Error ? error.message : "Unknown import error"
+        });
+        trimArray(job.errors, 50);
+      }
+    }
+
+    job.status = "completed";
+    job.completedAt = new Date().toISOString();
+  } catch (error) {
+    job.status = "failed";
+    job.completedAt = new Date().toISOString();
+    job.errors.push({
+      contactId: "",
+      phone: "",
+      email: "",
+      reason: error instanceof Error ? error.message : "Import job failed"
+    });
+    trimArray(job.errors, 50);
+  }
+}
+
 async function resolveDealSmsCustomer(dealId: string) {
   const dealResponse = await getBitrixDealById(dealId);
   const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
@@ -1185,6 +1513,7 @@ async function saveDealOutboundSmsRecord(params: {
   text: string;
   telnyxResponse: unknown;
   bitrixResponse?: unknown;
+  fromPhone?: string;
 }) {
   const responseRecord =
     params.telnyxResponse && typeof params.telnyxResponse === "object"
@@ -1202,7 +1531,7 @@ async function saveDealOutboundSmsRecord(params: {
     eventType: "message.sent",
     eventChannel: "sms",
     receivedAt: new Date().toISOString(),
-    from: config.telnyxFromNumber,
+    from: String(params.fromPhone ?? config.telnyxFromNumber),
     to: params.customerPhone,
     text: params.text,
     status: "sent_from_bitrix_deal",
@@ -1223,6 +1552,101 @@ type SmsConversationMessage = {
   text: string;
   at: string;
 };
+
+type TelnyxSenderOption = {
+  value: string;
+  label: string;
+};
+
+let cachedTelnyxSenderOptions: {
+  csvPath: string;
+  mtimeMs: number;
+  options: TelnyxSenderOption[];
+} | null = null;
+
+function resolveTelnyxNumbersCsvPath(): string {
+  return path.isAbsolute(config.telnyxNumbersCsvPath)
+    ? config.telnyxNumbersCsvPath
+    : path.resolve(process.cwd(), config.telnyxNumbersCsvPath);
+}
+
+function loadTelnyxSenderOptions(): TelnyxSenderOption[] {
+  const csvPath = resolveTelnyxNumbersCsvPath();
+
+  try {
+    const stat = fs.statSync(csvPath);
+    if (cachedTelnyxSenderOptions && cachedTelnyxSenderOptions.csvPath === csvPath && cachedTelnyxSenderOptions.mtimeMs === stat.mtimeMs) {
+      return cachedTelnyxSenderOptions.options;
+    }
+
+    const [headerLine, ...lines] = fs.readFileSync(csvPath, "utf8").split(/\r?\n/);
+    const headers = headerLine.split(",").map((header) => header.trim());
+    const numberIndex = headers.indexOf("number_val_e164");
+    const typeIndex = headers.indexOf("phone_number_type");
+    const statusIndex = headers.indexOf("status");
+
+    const options: TelnyxSenderOption[] = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const columns = trimmed.split(",");
+      const value = String(columns[numberIndex] ?? "").trim();
+      if (!value) {
+        continue;
+      }
+
+      const status = String(columns[statusIndex] ?? "").trim();
+      if (status && status.toLowerCase() !== "active") {
+        continue;
+      }
+
+      const type = String(columns[typeIndex] ?? "").trim();
+      options.push({
+        value,
+        label: type ? `${value} (${type})` : value
+      });
+    }
+
+    if (!options.some((option) => option.value === config.telnyxFromNumber)) {
+      options.unshift({
+        value: config.telnyxFromNumber,
+        label: `${config.telnyxFromNumber} (default)`
+      });
+    }
+
+    cachedTelnyxSenderOptions = {
+      csvPath,
+      mtimeMs: stat.mtimeMs,
+      options
+    };
+    return options;
+  } catch {
+    const fallbackOptions = [{
+      value: config.telnyxFromNumber,
+      label: `${config.telnyxFromNumber} (default)`
+    }];
+
+    cachedTelnyxSenderOptions = {
+      csvPath,
+      mtimeMs: 0,
+      options: fallbackOptions
+    };
+    return fallbackOptions;
+  }
+}
+
+function resolveComposeSmsSenderNumber(requestedFromNumber?: string): string {
+  const requested = String(requestedFromNumber ?? "").trim();
+  const options = loadTelnyxSenderOptions();
+  if (!requested) {
+    return options[0]?.value ?? config.telnyxFromNumber;
+  }
+
+  return options.find((option) => option.value === requested)?.value ?? "";
+}
 
 function mapSmsRecordsToConversationMessages(
   records: TelnyxWebhookRecord[],
@@ -2873,12 +3297,17 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
   const dealId = String(placementOptions.ID ?? requestBody.dealId ?? req.query.dealId ?? "").trim();
   const rawPhone = String(requestBody.phone ?? req.query.phone ?? "").trim();
   const phone = normalizePhoneForSms(rawPhone);
+  const senderOptions = loadTelnyxSenderOptions();
+  const requestedFromNumber = String(requestBody.fromNumber ?? req.query.fromNumber ?? "").trim();
+  const selectedFromNumber = resolveComposeSmsSenderNumber(requestedFromNumber) || senderOptions[0]?.value || config.telnyxFromNumber;
 
   function renderComposeSmsHtml(params: {
     dealId: string;
     rawPhone: string;
     phone: string;
     messages: SmsConversationMessage[];
+    senderOptions: TelnyxSenderOption[];
+    selectedFromNumber: string;
     error?: string;
   }): string {
     const rows = params.messages.map((m) => {
@@ -2903,8 +3332,8 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
       .panel { background: #fff; border: 1px solid #dfe5ef; border-radius: 8px; padding: 10px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
       .lookup { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
       label { display: block; color: #344054; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
-      input, textarea { display: block; width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.4; color: #101828; background: #fff; }
-      input:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
+      input, textarea, select { display: block; width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.4; color: #101828; background: #fff; }
+      input:focus, textarea:focus, select:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
       textarea { min-height: 76px; resize: vertical; }
       button { min-height: 36px; border: 0; border-radius: 7px; background: #0b66ff; color: #fff; font-weight: 600; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
       button:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -2932,7 +3361,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     <div class="header">
       <div>
         <h1>Compose SMS</h1>
-        <div class="sub">${params.phone ? `${escapeHtml(params.phone)} to ${escapeHtml(config.telnyxFromNumber)}` : "Start or continue a conversation by phone number."}</div>
+        <div class="sub">${params.phone ? `${escapeHtml(params.phone)} from ${escapeHtml(params.selectedFromNumber)}` : "Start or continue a conversation by phone number."}</div>
       </div>
       ${params.dealId ? `<div class="badge">Deal ${escapeHtml(params.dealId)}</div>` : ""}
     </div>
@@ -2950,6 +3379,12 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
 
     ${params.phone && !params.error ? `
       <form class="panel" id="composeSmsForm">
+        <div style="margin-bottom: 8px;">
+          <label for="fromNumber">Send from</label>
+          <select id="fromNumber" name="fromNumber">
+            ${params.senderOptions.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === params.selectedFromNumber ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+          </select>
+        </div>
         <label for="smsText">Message</label>
         <textarea id="smsText" maxlength="1000" placeholder="Type an SMS to ${escapeHtml(params.phone)}"></textarea>
         <div class="actions">
@@ -2963,6 +3398,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     ${params.phone && !params.error ? `
       <script>
         const form = document.getElementById("composeSmsForm");
+        const fromNumber = document.getElementById("fromNumber");
         const text = document.getElementById("smsText");
         const button = document.getElementById("sendBtn");
         const status = document.getElementById("sendStatus");
@@ -2990,6 +3426,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
               body: JSON.stringify({
                 dealId: ${JSON.stringify(params.dealId)},
                 phone: ${JSON.stringify(params.phone)},
+                fromNumber: fromNumber.value,
                 text: message
               })
             });
@@ -3004,6 +3441,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
               const next = new URL("/bitrix/widgets/deal-compose-sms", window.location.origin);
               next.searchParams.set("dealId", ${JSON.stringify(params.dealId)});
               next.searchParams.set("phone", ${JSON.stringify(params.phone)});
+              next.searchParams.set("fromNumber", fromNumber.value);
               window.location.href = next.toString();
             }, 700);
           } catch (error) {
@@ -3024,6 +3462,8 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
       rawPhone,
       phone: "",
       messages: [],
+      senderOptions,
+      selectedFromNumber,
       error: "Enter a valid phone number."
     }));
   }
@@ -3034,7 +3474,9 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
       dealId,
       rawPhone,
       phone,
-      messages: phone ? mapSmsRecordsToConversationMessages(records, phone) : []
+      messages: phone ? mapSmsRecordsToConversationMessages(records, phone) : [],
+      senderOptions,
+      selectedFromNumber
     }));
   } catch (error) {
     console.error("Failed to render compose SMS widget", error);
@@ -3043,6 +3485,8 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
       rawPhone,
       phone,
       messages: [],
+      senderOptions,
+      selectedFromNumber,
       error: error instanceof Error ? error.message : "Compose SMS could not be loaded."
     }));
   }
@@ -3053,13 +3497,18 @@ app.post("/bitrix/widgets/deal-compose-sms/send", async (req: Request, res: Resp
     return res.status(401).json({ ok: false, error: "Invalid inbound secret" });
   }
 
-  const body = req.body as { dealId?: string | number; phone?: string; text?: string };
+  const body = req.body as { dealId?: string | number; phone?: string; fromNumber?: string; text?: string };
   const dealId = String(body.dealId ?? "").trim();
   const phone = normalizePhoneForSms(String(body.phone ?? ""));
+  const fromNumber = resolveComposeSmsSenderNumber(String(body.fromNumber ?? "")) || "";
   const text = String(body.text ?? "").trim();
 
   if (!phone || !text) {
     return res.status(400).json({ ok: false, error: "Missing phone or text" });
+  }
+
+  if (!fromNumber) {
+    return res.status(400).json({ ok: false, error: "Invalid sender number" });
   }
 
   try {
@@ -3067,18 +3516,20 @@ app.post("/bitrix/widgets/deal-compose-sms/send", async (req: Request, res: Resp
 
     const telnyxResponse = await sendSmsThroughTelnyx({
       to: phone,
-      text
+      text,
+      from: fromNumber
     });
     const telnyxMessageId = await saveDealOutboundSmsRecord({
       dealId: dealId || "manual",
       customerPhone: phone,
       text,
-      telnyxResponse
+      telnyxResponse,
+      fromPhone: fromNumber
     });
 
     const bitrixResponse = await sendToBitrixOpenChannel({
       sourcePhone: phone,
-      destinationPhone: config.telnyxFromNumber,
+      destinationPhone: fromNumber,
       text: dealId ? `Outbound SMS sent from Deal ${dealId}:\n${text}` : `Outbound SMS sent:\n${text}`,
       externalMessageId: `deal-compose-${dealId || "manual"}-${telnyxMessageId}`,
       eventTimestamp: new Date().toISOString(),
@@ -3093,7 +3544,8 @@ app.post("/bitrix/widgets/deal-compose-sms/send", async (req: Request, res: Resp
       customerPhone: phone,
       text,
       telnyxResponse,
-      bitrixResponse
+      bitrixResponse,
+      fromPhone: fromNumber
     });
 
     return res.status(200).json({
@@ -3828,6 +4280,86 @@ app.get("/debug/bitrix/deals/fields", async (_req: Request, res: Response) => {
     console.error("Failed to load Bitrix deal fields", error);
     return res.status(500).json({ ok: false, error: "Bitrix deal fields lookup failed" });
   }
+});
+
+app.post("/admin/bitrix/import-contacts", async (req: Request, res: Response) => {
+  if (!verifyContactImportSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid import secret" });
+  }
+
+  const body = req.body as {
+    sourceUrl?: string;
+    dryRun?: boolean;
+    maxContacts?: number;
+    originatorId?: string;
+    overwriteExisting?: boolean;
+  };
+
+  const sourceUrl = String(body.sourceUrl ?? config.contactImportSourceUrl ?? "").trim();
+  if (!sourceUrl) {
+    return res.status(400).json({ ok: false, error: "Missing sourceUrl and CONTACT_IMPORT_SOURCE_URL is not set" });
+  }
+
+  const maxContactsRaw = Number(body.maxContacts);
+  const maxContacts =
+    Number.isInteger(maxContactsRaw) && maxContactsRaw > 0
+      ? maxContactsRaw
+      : undefined;
+  const dryRun = Boolean(body.dryRun);
+  const originatorId = String(body.originatorId ?? config.contactImportOriginatorId).trim() || "global_node_crm";
+  const overwriteExisting = body.overwriteExisting === undefined ? true : Boolean(body.overwriteExisting);
+  const jobId = crypto.randomUUID();
+
+  const job: ContactImportJob = {
+    id: jobId,
+    status: "queued",
+    startedAt: new Date().toISOString(),
+    sourceUrl,
+    dryRun,
+    maxContacts,
+    originatorId,
+    overwriteExisting,
+    totals: {
+      fetched: 0,
+      processed: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0
+    },
+    errors: []
+  };
+
+  contactImportJobs.set(jobId, job);
+  trimContactImportJobs();
+
+  void runContactImportJob(jobId, {
+    sourceUrl,
+    dryRun,
+    maxContacts,
+    originatorId,
+    overwriteExisting
+  });
+
+  return res.status(202).json({
+    ok: true,
+    jobId,
+    status: job.status,
+    statusUrl: `/admin/bitrix/import-contacts/${jobId}`
+  });
+});
+
+app.get("/admin/bitrix/import-contacts/:jobId", (req: Request, res: Response) => {
+  if (!verifyContactImportSecret(req)) {
+    return res.status(401).json({ ok: false, error: "Invalid import secret" });
+  }
+
+  const job = contactImportJobs.get(String(req.params.jobId ?? "").trim());
+  if (!job) {
+    return res.status(404).json({ ok: false, error: "Import job not found" });
+  }
+
+  return res.status(200).json({ ok: true, job });
 });
 
 app.post("/sms/send", async (req: Request, res: Response) => {

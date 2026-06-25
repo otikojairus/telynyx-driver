@@ -677,6 +677,44 @@ export async function getBitrixContactById(contactId: string) {
   });
 }
 
+export async function listBitrixContacts(params: {
+  filter?: Record<string, unknown>;
+  select?: string[];
+  start?: number;
+}) {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>>; next?: number }>("crm.contact.list", {
+    filter: params.filter ?? {},
+    select: params.select ?? ["ID"],
+    start: params.start ?? 0
+  });
+}
+
+export async function createBitrixContact(fields: Record<string, unknown>) {
+  return callBitrixMethod<{ result?: number }>("crm.contact.add", { fields });
+}
+
+export async function updateBitrixContact(params: {
+  contactId: string;
+  fields: Record<string, unknown>;
+}) {
+  return callBitrixMethod("crm.contact.update", {
+    id: params.contactId,
+    fields: params.fields
+  });
+}
+
+export async function findBitrixDuplicatesByCommunication(params: {
+  entityType: "CONTACT" | "LEAD" | "COMPANY";
+  type: "PHONE" | "EMAIL";
+  values: string[];
+}) {
+  return callBitrixMethod<{ result?: Record<string, Array<string | number>> }>("crm.duplicate.findbycomm", {
+    entity_type: params.entityType,
+    type: params.type,
+    values: params.values
+  });
+}
+
 export async function updateBitrixDealStage(params: {
   dealId: string;
   stageId: string;
@@ -826,9 +864,10 @@ export async function sendToBitrixOpenChannel(params: {
 export async function sendSmsThroughTelnyx(params: {
   to: string;
   text: string;
+  from?: string;
 }) {
   const body = {
-    from: config.telnyxFromNumber,
+    from: String(params.from ?? config.telnyxFromNumber),
     to: params.to,
     text: params.text
   };
