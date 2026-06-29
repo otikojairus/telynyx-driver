@@ -3343,8 +3343,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
   });
   const requestBody = req.body as Record<string, unknown>;
   const dealId = String(placementOptions.ID ?? requestBody.dealId ?? req.query.dealId ?? "").trim();
-  const rawPhone = String(requestBody.phone ?? req.query.phone ?? "").trim();
-  const phone = normalizePhoneForSms(rawPhone);
+  const requestedPhone = String(requestBody.phone ?? req.query.phone ?? "").trim();
   const senderOptions = loadTelnyxSenderOptions();
   const requestedFromNumber = String(requestBody.fromNumber ?? req.query.fromNumber ?? "").trim();
   const selectedFromNumber = resolveComposeSmsSenderNumber(requestedFromNumber) || senderOptions[0]?.value || config.telnyxFromNumber;
@@ -3353,6 +3352,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     dealId: string;
     rawPhone: string;
     phone: string;
+    customerName?: string;
     messages: SmsConversationMessage[];
     senderOptions: TelnyxSenderOption[];
     selectedFromNumber: string;
@@ -3409,7 +3409,7 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     <div class="header">
       <div>
         <h1>Compose SMS</h1>
-        <div class="sub">${params.phone ? `${escapeHtml(params.phone)} from ${escapeHtml(params.selectedFromNumber)}` : "Start or continue a conversation by phone number."}</div>
+        <div class="sub">${params.phone ? `${params.customerName ? `${escapeHtml(params.customerName)} · ` : ""}${escapeHtml(params.phone)} from ${escapeHtml(params.selectedFromNumber)}` : "Start or continue a conversation by phone number."}</div>
       </div>
       ${params.dealId ? `<div class="badge">Deal ${escapeHtml(params.dealId)}</div>` : ""}
     </div>
@@ -3504,24 +3504,39 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
 </html>`;
   }
 
-  if (rawPhone && !phone) {
-    return res.status(200).send(renderComposeSmsHtml({
-      dealId,
-      rawPhone,
-      phone: "",
-      messages: [],
-      senderOptions,
-      selectedFromNumber,
-      error: "Enter a valid phone number."
-    }));
-  }
-
   try {
+    let rawPhone = requestedPhone;
+    let customerName = "";
+
+    if (!rawPhone && dealId) {
+      const customer = await resolveDealSmsCustomer(dealId);
+      customerName = customer.customerName;
+      if (customer.customerPhone) {
+        rawPhone = customer.customerPhone;
+      }
+    }
+
+    const phone = normalizePhoneForSms(rawPhone);
+
+    if (rawPhone && !phone) {
+      return res.status(200).send(renderComposeSmsHtml({
+        dealId,
+        rawPhone,
+        phone: "",
+        customerName,
+        messages: [],
+        senderOptions,
+        selectedFromNumber,
+        error: "Enter a valid phone number."
+      }));
+    }
+
     const records = phone ? await listTelnyxSmsRecordsByPhone(phone) : [];
     return res.status(200).send(renderComposeSmsHtml({
       dealId,
       rawPhone,
       phone,
+      customerName,
       messages: phone ? mapSmsRecordsToConversationMessages(records, phone) : [],
       senderOptions,
       selectedFromNumber
@@ -3530,8 +3545,8 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     console.error("Failed to render compose SMS widget", error);
     return res.status(200).send(renderComposeSmsHtml({
       dealId,
-      rawPhone,
-      phone,
+      rawPhone: requestedPhone,
+      phone: normalizePhoneForSms(requestedPhone),
       messages: [],
       senderOptions,
       selectedFromNumber,
