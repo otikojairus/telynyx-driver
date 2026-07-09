@@ -381,27 +381,43 @@ export async function fetchCallTranscript(params: {
   direction?: "inbound" | "outbound";
   agentName?: string;
 }): Promise<CallTranscriptApiResponse> {
+  const requestBody = {
+    contact_id: params.contactId ?? "",
+    full_name: params.fullName ?? "",
+    phone: params.phone ?? "",
+    customData: {
+      ghl_call_id: params.callId,
+      audio_url: params.audioUrl,
+      call_start: params.callStart ?? "",
+      call_end: params.callEnd ?? "",
+      direction: params.direction ?? "",
+      agent_name: params.agentName ?? ""
+    }
+  };
+
+  console.log(`[call-transcript] call ${params.callId}: request`, JSON.stringify(requestBody));
+
   const response = await fetch(config.callTranscriptApiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contact_id: params.contactId ?? "",
-      full_name: params.fullName ?? "",
-      phone: params.phone ?? "",
-      customData: {
-        ghl_call_id: params.callId,
-        audio_url: params.audioUrl,
-        call_start: params.callStart ?? "",
-        call_end: params.callEnd ?? "",
-        direction: params.direction ?? "",
-        agent_name: params.agentName ?? ""
-      }
-    })
+    body: JSON.stringify(requestBody)
   });
 
-  const body = await response.json().catch(() => ({}));
+  const rawText = await response.text();
+  console.log(
+    `[call-transcript] call ${params.callId}: response HTTP ${response.status}`,
+    rawText.slice(0, 2000)
+  );
+
+  let body: unknown = {};
+  try {
+    body = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    body = {};
+  }
+
   if (!response.ok) {
-    throw new Error(`Call transcript API HTTP ${response.status}: ${JSON.stringify(body)}`);
+    throw new Error(`Call transcript API HTTP ${response.status}: ${rawText.slice(0, 500)}`);
   }
 
   return body as CallTranscriptApiResponse;
