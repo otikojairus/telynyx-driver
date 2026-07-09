@@ -1830,6 +1830,7 @@ async function generateAndSendDealPaymentLink(params: {
   paymentType: "deposit" | "callout";
   amount?: string | number;
   amountField?: string;
+  items?: Array<{ description?: string; quantity?: string | number; unitPrice?: string | number }>;
   currency?: string;
   customerName?: string;
   customerEmail?: string;
@@ -1844,6 +1845,13 @@ async function generateAndSendDealPaymentLink(params: {
   const paymentType = params.paymentType;
   const amount = normalizeMoneyAmount(params.amount);
   const amountField = String(params.amountField ?? "").trim();
+  const requestedItems = (params.items ?? [])
+    .map((item) => ({
+      description: String(item.description ?? "").trim(),
+      quantity: Number(item.quantity ?? 1) || 1,
+      unitPrice: Number(normalizeMoneyAmount(item.unitPrice) ?? 0)
+    }))
+    .filter((item) => item.unitPrice > 0);
   const currency = String(params.currency ?? "USD").trim().toUpperCase();
   let customerName = String(params.customerName ?? "").trim();
   let customerEmail = String(params.customerEmail ?? "").trim();
@@ -1866,22 +1874,36 @@ async function generateAndSendDealPaymentLink(params: {
     }
   }
 
-  let resolvedAmount = amount;
-  if (!resolvedAmount) {
-    const byConfigured = config.bitrixDealClientPriceField
-      ? normalizeMoneyAmount(deal[config.bitrixDealClientPriceField])
-      : null;
-    const byOpportunity = normalizeMoneyAmount(deal.OPPORTUNITY);
-    const byNamedField = amountField ? normalizeMoneyAmount(deal[amountField]) : null;
-    resolvedAmount = byNamedField ?? byConfigured ?? byOpportunity;
-  }
-  if (!resolvedAmount) {
-    throw new Error("Missing valid amount. Provide amount or ensure deal has client price/opportunity.");
-  }
-
   const description =
     String(params.description ?? "").trim() ||
     `${paymentType === "deposit" ? "Deposit" : "Callout fee"} for Deal ${dealId}`;
+
+  let resolvedAmount: number | null;
+  let invoiceItems: Array<{ description: string; quantity: number; unitPrice: number }>;
+
+  if (requestedItems.length) {
+    invoiceItems = requestedItems.map((item) => ({
+      description: item.description || description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice
+    }));
+    resolvedAmount = invoiceItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  } else {
+    resolvedAmount = amount;
+    if (!resolvedAmount) {
+      const byConfigured = config.bitrixDealClientPriceField
+        ? normalizeMoneyAmount(deal[config.bitrixDealClientPriceField])
+        : null;
+      const byOpportunity = normalizeMoneyAmount(deal.OPPORTUNITY);
+      const byNamedField = amountField ? normalizeMoneyAmount(deal[amountField]) : null;
+      resolvedAmount = byNamedField ?? byConfigured ?? byOpportunity;
+    }
+    if (!resolvedAmount) {
+      throw new Error("Missing valid amount. Provide amount, invoice items, or ensure deal has client price/opportunity.");
+    }
+    invoiceItems = [{ description, quantity: 1, unitPrice: resolvedAmount }];
+  }
+
   const metadata = {
     dealId,
     paymentType,
@@ -1890,9 +1912,8 @@ async function generateAndSendDealPaymentLink(params: {
   };
 
   const wave = await createWavePaymentLink({
-    amount: resolvedAmount,
+    items: invoiceItems,
     currency,
-    description,
     metadata,
     customer: {
       name: customerName || undefined,
@@ -1900,6 +1921,8 @@ async function generateAndSendDealPaymentLink(params: {
       phone: customerPhone || undefined
     }
   });
+
+  resolvedAmount = wave.total ?? resolvedAmount;
 
   const fieldName =
     paymentType === "deposit" ? config.bitrixDealDepositLinkField : config.bitrixDealCalloutLinkField;
@@ -1965,6 +1988,7 @@ async function generateAndSendDealPaymentLink(params: {
     amount: resolvedAmount,
     currency,
     link: wave.link,
+    items: invoiceItems,
     customer: {
       name: customerName,
       email: customerEmail,
@@ -3698,6 +3722,251 @@ app.post("/bitrix/widgets/deal-compose-sms/send", async (req: Request, res: Resp
   }
 });
 
+function renderDealPaymentHtml(params: {
+  dealId: string;
+  dealTitle: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
+  defaultAmount: number;
+  currency: string;
+  inboundSecret: string;
+}): string {
+  const defaultDescription = params.dealId ? `Deposit for Deal ${params.dealId}` : "Deposit";
+  const customerLine =
+    [params.customerName, params.customerPhone, params.customerEmail].filter(Boolean).join(" · ") ||
+    "No contact on file";
+
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Payment Link</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body { margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; background: #f6f8fb; color: #1a1a1a; }
+      .header { margin-bottom: 10px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+      .header h1 { font-size: 15px; margin: 0 0 2px; }
+      .header .sub { color: #667085; font-size: 12px; overflow-wrap: anywhere; }
+      .badge { flex: 0 0 auto; border: 1px solid #bfdbfe; color: #175cd3; background: #eff6ff; border-radius: 999px; padding: 4px 8px; font-size: 11px; }
+      .panel { background: #fff; border: 1px solid #dfe5ef; border-radius: 10px; padding: 12px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #667085; margin: 0 0 10px; }
+      label { display: block; color: #344054; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+      input, select { display: block; width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 8px 10px; font: inherit; line-height: 1.4; color: #101828; background: #fff; }
+      input:focus, select:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
+      button { border: 0; border-radius: 8px; font-weight: 600; padding: 9px 14px; cursor: pointer; font: inherit; }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .segmented { display: inline-flex; background: #eef1f6; border-radius: 10px; padding: 3px; gap: 2px; }
+      .segmented button { background: transparent; color: #475467; padding: 7px 16px; border-radius: 8px; }
+      .segmented button.active { background: #fff; color: #101828; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08); }
+      .items { display: flex; flex-direction: column; gap: 8px; }
+      .itemRow { display: grid; grid-template-columns: 1fr 52px 96px 96px 28px; gap: 6px; align-items: center; }
+      .itemRow .lineTotal { font-size: 12.5px; color: #344054; text-align: right; padding-right: 4px; }
+      .itemRow input { padding: 7px 8px; }
+      .removeItem { background: transparent; color: #b42318; border-radius: 6px; padding: 4px; font-size: 15px; line-height: 1; width: 28px; height: 28px; }
+      .itemsHead { display: grid; grid-template-columns: 1fr 52px 96px 96px 28px; gap: 6px; font-size: 11px; color: #98a2b3; padding: 0 0 2px; }
+      .addItem { background: #fff; border: 1px dashed #d0d5dd; color: #344054; width: 100%; margin-top: 8px; padding: 8px; }
+      .invoice { background: #fbfcfe; }
+      .invoice .billTo { color: #475467; font-size: 12px; margin-bottom: 10px; }
+      .invoiceTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      .invoiceTable th { text-align: left; color: #98a2b3; font-size: 11px; font-weight: 600; padding: 4px 6px; border-bottom: 1px solid #eaeef4; }
+      .invoiceTable th:last-child, .invoiceTable td:last-child { text-align: right; }
+      .invoiceTable td { padding: 6px 6px; border-bottom: 1px solid #eef1f6; color: #344054; }
+      .invoiceTotalRow td { border-bottom: none; padding-top: 10px; font-weight: 700; color: #101828; font-size: 14px; }
+      .invoiceEmpty { color: #98a2b3; font-size: 12px; padding: 8px 0; }
+      .sendRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
+      .sendRow button { background: #0b66ff; color: #fff; flex: 1 1 auto; }
+      .status { color: #667085; font-size: 12px; min-height: 16px; overflow-wrap: anywhere; margin-top: 8px; }
+      .status.ok { color: #067647; }
+      .status.err { color: #b42318; }
+      .status a { color: #0b66ff; font-weight: 600; }
+      @media (max-width: 460px) {
+        .itemRow, .itemsHead { grid-template-columns: 1fr 40px 72px 72px 24px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>Payment Link</h1>
+        <div class="sub">${params.dealTitle ? `${escapeHtml(params.dealTitle)} · ` : ""}${escapeHtml(customerLine)}</div>
+      </div>
+      ${params.dealId ? `<div class="badge">Deal ${escapeHtml(params.dealId)}</div>` : ""}
+    </div>
+
+    ${!params.dealId ? `<div class="panel"><div class="status err">Missing deal ID from placement context.</div></div>` : `
+    <div class="panel">
+      <h2>Payment type</h2>
+      <div class="segmented" id="paymentType">
+        <button type="button" class="active" data-type="deposit">Deposit</button>
+        <button type="button" data-type="callout">Callout fee</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Invoice items</h2>
+      <div class="itemsHead"><span>Description</span><span>Qty</span><span>Price</span><span>Total</span><span></span></div>
+      <div class="items" id="items"></div>
+      <button type="button" class="addItem" id="addItem">+ Add item</button>
+    </div>
+
+    <div class="panel invoice">
+      <h2>Invoice preview</h2>
+      <div class="billTo">Bill to: ${escapeHtml(customerLine)}</div>
+      <div id="invoicePreview"></div>
+    </div>
+
+    <div class="panel">
+      <div class="sendRow">
+        <button type="button" id="sendBtn">Send Deposit Link</button>
+      </div>
+      <div class="status" id="status"></div>
+    </div>
+    `}
+
+    ${params.dealId ? `
+    <script>
+      const dealId = ${JSON.stringify(params.dealId)};
+      const currency = ${JSON.stringify(params.currency)};
+      const items = document.getElementById("items");
+      const invoicePreview = document.getElementById("invoicePreview");
+      const sendBtn = document.getElementById("sendBtn");
+      const status = document.getElementById("status");
+      let paymentType = "deposit";
+
+      const money = (value) => {
+        try {
+          return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(value);
+        } catch {
+          return "$" + value.toFixed(2);
+        }
+      };
+
+      function addItemRow(description, quantity, unitPrice) {
+        const row = document.createElement("div");
+        row.className = "itemRow";
+        row.innerHTML =
+          '<input type="text" class="desc" placeholder="Description" value="' + (description ? escapeHtml(description) : "") + '" />' +
+          '<input type="number" class="qty" min="0" step="1" value="' + (quantity || 1) + '" />' +
+          '<input type="number" class="price" min="0" step="0.01" value="' + (unitPrice || "") + '" placeholder="0.00" />' +
+          '<div class="lineTotal">$0.00</div>' +
+          '<button type="button" class="removeItem" title="Remove item">&times;</button>';
+
+        row.querySelectorAll("input").forEach((input) => input.addEventListener("input", renderPreview));
+        row.querySelector(".removeItem").addEventListener("click", () => {
+          row.remove();
+          renderPreview();
+        });
+        items.appendChild(row);
+        renderPreview();
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function collectItems() {
+        return Array.from(items.querySelectorAll(".itemRow")).map((row) => ({
+          description: row.querySelector(".desc").value.trim(),
+          quantity: Number(row.querySelector(".qty").value) || 1,
+          unitPrice: Number(row.querySelector(".price").value) || 0,
+          row
+        }));
+      }
+
+      function renderPreview() {
+        const rows = collectItems();
+        let total = 0;
+        rows.forEach((item) => {
+          const lineTotal = item.quantity * item.unitPrice;
+          total += lineTotal;
+          item.row.querySelector(".lineTotal").textContent = money(lineTotal);
+        });
+
+        const valid = rows.filter((item) => item.description && item.unitPrice > 0);
+        if (!valid.length) {
+          invoicePreview.innerHTML = '<div class="invoiceEmpty">Add at least one item to preview the invoice.</div>';
+        } else {
+          const body = valid.map((item) =>
+            '<tr><td>' + escapeHtml(item.description) + '</td><td>' + item.quantity + '</td><td>' + money(item.unitPrice) + '</td><td>' + money(item.quantity * item.unitPrice) + '</td></tr>'
+          ).join("");
+          invoicePreview.innerHTML =
+            '<table class="invoiceTable"><thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>' +
+            body +
+            '<tr class="invoiceTotalRow"><td colspan="3">Total</td><td>' + money(total) + '</td></tr>' +
+            '</tbody></table>';
+        }
+
+        sendBtn.disabled = !valid.length;
+      }
+
+      document.getElementById("addItem").addEventListener("click", () => addItemRow("", 1, ""));
+
+      document.getElementById("paymentType").addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-type]");
+        if (!button) return;
+        paymentType = button.dataset.type;
+        document.querySelectorAll("#paymentType button").forEach((btn) => btn.classList.toggle("active", btn === button));
+        sendBtn.textContent = paymentType === "deposit" ? "Send Deposit Link" : "Send Callout Link";
+      });
+
+      sendBtn.addEventListener("click", async () => {
+        const rows = collectItems().filter((item) => item.description && item.unitPrice > 0);
+        if (!rows.length) {
+          status.className = "status err";
+          status.textContent = "Add at least one item with a price.";
+          return;
+        }
+
+        sendBtn.disabled = true;
+        status.className = "status";
+        status.textContent = "Sending...";
+
+        try {
+          const response = await fetch("/webhooks/inbound/bitrix/deals/payment-links", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-inbound-secret": ${JSON.stringify(params.inboundSecret)}
+            },
+            body: JSON.stringify({
+              dealId,
+              paymentType,
+              currency,
+              items: rows.map((item) => ({ description: item.description, quantity: item.quantity, unitPrice: item.unitPrice }))
+            })
+          });
+
+          const json = await response.json();
+          if (!response.ok || !json.ok) {
+            throw new Error(json.error || "Request failed");
+          }
+
+          const smsNote = json.sms?.attempted ? (json.sms.sent ? "SMS sent." : "SMS failed.") : "";
+          const emailNote = json.email?.attempted ? (json.email.sent ? "Email sent." : "Email failed.") : "";
+          status.className = "status ok";
+          status.innerHTML = 'Sent ' + money(json.amount) + '. ' + [smsNote, emailNote].filter(Boolean).join(" ") + ' <a href="' + json.link + '" target="_blank" rel="noopener">Open invoice</a>';
+        } catch (error) {
+          status.className = "status err";
+          status.textContent = error?.message || "Unexpected error";
+        } finally {
+          sendBtn.disabled = false;
+        }
+      });
+
+      addItemRow(${JSON.stringify(defaultDescription)}, 1, ${JSON.stringify(params.defaultAmount || "")});
+    </script>
+    ` : ""}
+  </body>
+</html>`;
+}
+
 app.all("/bitrix/widgets/deal-payment", async (req: Request, res: Response) => {
   const placementOptionsRaw =
     String((req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS ?? "{}");
@@ -3710,83 +3979,47 @@ app.all("/bitrix/widgets/deal-payment", async (req: Request, res: Response) => {
     dealId = "";
   }
 
-  const inboundSecret = config.inboundDealWebhookSecret;
-  const html = `
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Send Payment Link</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; margin: 16px; color: #222; }
-          .wrap { max-width: 480px; }
-          .row { margin-bottom: 10px; }
-          .btn { border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; margin-right: 8px; }
-          .deposit { background: #0b66ff; color: white; }
-          .callout { background: #14532d; color: white; }
-          .hint { color: #666; font-size: 12px; }
-          .out { margin-top: 12px; font-size: 13px; white-space: pre-wrap; background: #f5f7fa; padding: 10px; border-radius: 8px; }
-          .error { color: #b91c1c; }
-        </style>
-      </head>
-      <body>
-        <div class="wrap">
-          <div class="row"><strong>Deal ID:</strong> <span id="dealId">${dealId || "Not found"}</span></div>
-          <div class="row">
-            <button class="btn deposit" id="sendDeposit">Send Deposit Link</button>
-            <button class="btn callout" id="sendCallout">Send Callout Link</button>
-          </div>
-          <div class="hint">This sends payment link via SMS and email using the current Deal context.</div>
-          <div class="out" id="out">Ready.</div>
-        </div>
-        <script>
-          const dealId = ${JSON.stringify(dealId)};
-          const out = document.getElementById("out");
+  let dealTitle = "";
+  let customerName = "";
+  let customerPhone = "";
+  let customerEmail = "";
+  let defaultAmount = 0;
 
-          async function sendPayment(paymentType) {
-            if (!dealId) {
-              out.innerHTML = '<span class="error">Missing deal ID from placement context.</span>';
-              return;
-            }
+  if (dealId) {
+    try {
+      const dealResponse = await getBitrixDealById(dealId);
+      const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+      dealTitle = String(deal.TITLE ?? "").trim();
 
-            out.textContent = "Sending...";
-            try {
-              const response = await fetch("/webhooks/inbound/bitrix/deals/payment-links", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "x-inbound-secret": ${JSON.stringify(inboundSecret)}
-                },
-                body: JSON.stringify({
-                  dealId,
-                  paymentType
-                })
-              });
+      const byConfigured = config.bitrixDealClientPriceField
+        ? normalizeMoneyAmount(deal[config.bitrixDealClientPriceField])
+        : null;
+      const byOpportunity = normalizeMoneyAmount(deal.OPPORTUNITY);
+      defaultAmount = byConfigured ?? byOpportunity ?? 0;
 
-              const json = await response.json();
-              if (!response.ok) {
-                out.innerHTML = '<span class="error">' + (json.error || "Request failed") + '</span>';
-                return;
-              }
+      const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
+      if (contactId) {
+        const contactResponse = await getBitrixContactById(contactId);
+        const contact = (contactResponse.result ?? {}) as Record<string, unknown>;
+        customerName = buildLeadCustomerName(contact);
+        customerPhone = normalizePhoneForSms(readLeadContactValue(contact.PHONE));
+        customerEmail = readLeadContactValue(contact.EMAIL);
+      }
+    } catch (error) {
+      console.error("Failed to load deal context for payment widget", error);
+    }
+  }
 
-              out.textContent = JSON.stringify({
-                ok: json.ok,
-                paymentType: json.paymentType,
-                link: json.link,
-                sms: json.sms,
-                email: json.email
-              }, null, 2);
-            } catch (error) {
-              out.innerHTML = '<span class="error">' + (error?.message || "Unexpected error") + '</span>';
-            }
-          }
-
-          document.getElementById("sendDeposit").addEventListener("click", () => sendPayment("deposit"));
-          document.getElementById("sendCallout").addEventListener("click", () => sendPayment("callout"));
-        </script>
-      </body>
-    </html>
-  `;
+  const html = renderDealPaymentHtml({
+    dealId,
+    dealTitle,
+    customerName,
+    customerPhone,
+    customerEmail,
+    defaultAmount,
+    currency: "USD",
+    inboundSecret: config.inboundDealWebhookSecret
+  });
 
   return res.status(200).send(html);
 });
@@ -5613,6 +5846,7 @@ app.post("/webhooks/inbound/bitrix/deals/payment-links", async (req: Request, re
     paymentType?: "deposit" | "callout";
     amount?: string | number;
     amountField?: string;
+    items?: Array<{ description?: string; quantity?: string | number; unitPrice?: string | number }>;
     currency?: string;
     customerName?: string;
     customerEmail?: string;
@@ -5628,6 +5862,7 @@ app.post("/webhooks/inbound/bitrix/deals/payment-links", async (req: Request, re
   const paymentType = String(body.paymentType ?? "").trim().toLowerCase();
   const amount = normalizeMoneyAmount(body.amount);
   const amountField = String(body.amountField ?? "").trim();
+  const items = Array.isArray(body.items) ? body.items : undefined;
   const currency = String(body.currency ?? "USD").trim().toUpperCase();
   let customerName = String(body.customerName ?? "").trim();
   let customerEmail = String(body.customerEmail ?? "").trim();
@@ -5648,6 +5883,7 @@ app.post("/webhooks/inbound/bitrix/deals/payment-links", async (req: Request, re
       paymentType: paymentType as "deposit" | "callout",
       amount: amount ?? undefined,
       amountField,
+      items,
       currency,
       customerName,
       customerEmail,

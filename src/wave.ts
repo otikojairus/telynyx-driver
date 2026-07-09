@@ -1,10 +1,15 @@
 import axios from "axios";
 import { config } from "./config";
 
-export interface CreateWavePaymentLinkInput {
-  amount: number;
-  currency: string;
+export interface WaveInvoiceItemInput {
   description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface CreateWavePaymentLinkInput {
+  items: WaveInvoiceItemInput[];
+  currency: string;
   metadata: Record<string, unknown>;
   customer?: {
     name?: string;
@@ -111,8 +116,7 @@ async function createWaveInvoice(params: {
   businessId: string;
   customerId: string;
   productId: string;
-  amount: number;
-  description: string;
+  items: WaveInvoiceItemInput[];
   currency: string;
 }) {
   const query = `
@@ -135,7 +139,7 @@ async function createWaveInvoice(params: {
     invoiceCreate?: {
       didSucceed?: boolean;
       inputErrors?: Array<{ message?: string }>;
-      invoice?: { id?: string; viewUrl?: string };
+      invoice?: { id?: string; viewUrl?: string; total?: { value?: string | number }; currency?: { code?: string } };
     };
   }>(query, {
     input: {
@@ -143,14 +147,12 @@ async function createWaveInvoice(params: {
       customerId: params.customerId,
       status: "SAVED",
       currency: params.currency,
-      items: [
-        {
-          productId: params.productId,
-          description: params.description,
-          quantity: 1,
-          unitPrice: params.amount
-        }
-      ]
+      items: params.items.map((item) => ({
+        productId: params.productId,
+        description: item.description,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice
+      }))
     }
   });
 
@@ -163,11 +165,17 @@ async function createWaveInvoice(params: {
     throw new Error(`Wave invoiceCreate failed${reason ? `: ${reason}` : ""}`);
   }
 
-  return result.invoice.viewUrl;
+  return {
+    link: result.invoice.viewUrl,
+    total: result.invoice.total?.value ? Number(result.invoice.total.value) : null,
+    currency: result.invoice.currency?.code ?? params.currency
+  };
 }
 
 export async function createWavePaymentLink(input: CreateWavePaymentLinkInput): Promise<{
   link: string;
+  total: number;
+  currency: string;
   providerResponse: unknown;
 }> {
   if (!config.waveBusinessId) {
@@ -175,6 +183,9 @@ export async function createWavePaymentLink(input: CreateWavePaymentLinkInput): 
   }
   if (!config.waveProductId) {
     throw new Error("Missing WAVE_PRODUCT_ID.");
+  }
+  if (!input.items.length) {
+    throw new Error("At least one invoice item is required.");
   }
 
   const customerId = await createWaveCustomer({
@@ -184,17 +195,20 @@ export async function createWavePaymentLink(input: CreateWavePaymentLinkInput): 
     phone: input.customer?.phone
   });
 
-  const link = await createWaveInvoice({
+  const invoice = await createWaveInvoice({
     businessId: config.waveBusinessId,
     customerId,
     productId: config.waveProductId,
-    amount: input.amount,
-    description: input.description,
+    items: input.items,
     currency: input.currency
   });
 
+  const fallbackTotal = input.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+
   return {
-    link,
+    link: invoice.link,
+    total: invoice.total ?? fallbackTotal,
+    currency: invoice.currency,
     providerResponse: {
       businessId: config.waveBusinessId,
       customerId

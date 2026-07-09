@@ -412,8 +412,11 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
     return { enabled: false, delivered: false };
   }
 
+  console.log(`[call-transcript] processing call ${params.callId}`);
+
   const statistic = await fetchBitrixCallStatistic(params.callId);
   if (!statistic) {
+    console.warn(`[call-transcript] call ${params.callId}: statistic not found`);
     return {
       enabled: true,
       delivered: false,
@@ -424,6 +427,7 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
 
   const audioUrl = String(statistic.CALL_RECORD_URL ?? "").trim();
   if (!audioUrl) {
+    console.warn(`[call-transcript] call ${params.callId}: recording url missing`);
     return {
       enabled: true,
       delivered: false,
@@ -469,6 +473,22 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
         transcript: transcriptText,
         startTime: callStart || undefined
       });
+      console.log(
+        `[call-transcript] call ${params.callId}: activity created`,
+        JSON.stringify(activity)
+      );
+    } else {
+      console.warn(
+        `[call-transcript] call ${params.callId}: no activity created`,
+        JSON.stringify({
+          hasTranscriptText: Boolean(transcriptText),
+          ownerTypeId,
+          crmEntityType: statistic.CRM_ENTITY_TYPE,
+          crmEntityId: statistic.CRM_ENTITY_ID,
+          transcriptStatus: transcript.status,
+          transcriptReason: transcript.reason
+        })
+      );
     }
 
     return {
@@ -480,6 +500,10 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
       activity
     };
   } catch (error) {
+    console.error(
+      `[call-transcript] call ${params.callId}: failed`,
+      describeAxiosError(error)
+    );
     return {
       enabled: true,
       delivered: false,
