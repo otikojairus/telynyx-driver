@@ -487,7 +487,8 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
         ownerId: Number(statistic.CRM_ENTITY_ID),
         subject: `${direction === "outbound" ? "Outbound" : "Inbound"} call transcript`,
         transcript: transcriptText,
-        startTime: callStart || undefined
+        startTime: callStart || undefined,
+        direction
       });
       console.log(
         `[call-transcript] call ${params.callId}: activity created`,
@@ -700,6 +701,42 @@ export async function bindBitrixDealComposeSmsWidget() {
   }
 }
 
+export async function bindBitrixDealCallTranscriptsWidget() {
+  const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-call-transcripts`;
+  const placement = "CRM_DEAL_DETAIL_TAB";
+
+  const unbind = await callBitrixMethod("placement.unbind", {
+    PLACEMENT: placement,
+    HANDLER: handler
+  }).catch((error) => ({
+    error: error instanceof Error ? error.message : "Placement unbind failed"
+  }));
+
+  try {
+    const bind = await callBitrixMethod("placement.bind", {
+      PLACEMENT: placement,
+      HANDLER: handler,
+      TITLE: "Call Transcripts"
+    });
+
+    return {
+      ok: true,
+      placement,
+      handler,
+      unbind,
+      bind
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      placement,
+      handler,
+      unbind,
+      error: error instanceof Error ? error.message : "Placement bind failed"
+    };
+  }
+}
+
 export async function bindBitrixDealFundingWidget() {
   const handler = `${config.publicBaseUrl}/bitrix/widgets/deal-funding`;
   const placement = "CRM_DEAL_DETAIL_TAB";
@@ -852,6 +889,7 @@ export async function createCallTranscriptActivity(params: {
   transcript: string;
   startTime?: string;
   responsibleId?: number;
+  direction?: "inbound" | "outbound";
 }) {
   return callBitrixMethod<{ result?: number }>("crm.activity.add", {
     fields: {
@@ -864,11 +902,24 @@ export async function createCallTranscriptActivity(params: {
       DESCRIPTION: params.transcript,
       DESCRIPTION_TYPE: 1,
       COMPLETED: "Y",
-      DIRECTION: 2,
+      DIRECTION: params.direction === "outbound" ? 2 : 1,
       RESPONSIBLE_ID: params.responsibleId ?? 1,
       START_TIME: params.startTime ?? new Date().toISOString(),
       COMMUNICATIONS: []
     }
+  });
+}
+
+export async function listCallTranscriptActivities(params: { ownerTypeId: number; ownerId: number }) {
+  return callBitrixMethod<{ result?: Array<Record<string, unknown>> }>("crm.activity.list", {
+    filter: {
+      OWNER_TYPE_ID: params.ownerTypeId,
+      OWNER_ID: params.ownerId,
+      PROVIDER_ID: "REST_APP",
+      PROVIDER_TYPE_ID: CALL_TRANSCRIPT_PROVIDER_TYPE_ID
+    },
+    select: ["ID", "SUBJECT", "DESCRIPTION", "START_TIME", "CREATED", "DIRECTION"],
+    order: { START_TIME: "DESC" }
   });
 }
 

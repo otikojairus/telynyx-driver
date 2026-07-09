@@ -10,6 +10,7 @@ import {
   answerBitrixOpenLineChat,
   bindBitrixDealEvents,
   bindBitrixDealCardDatesWidget,
+  bindBitrixDealCallTranscriptsWidget,
   bindBitrixDealComposeSmsWidget,
   bindBitrixDealFundingWidget,
   bindBitrixDealVendorsWidget,
@@ -43,6 +44,7 @@ import {
   bindBitrixCallCardWidget,
   createBitrixDeal,
   createCallTranscriptActivity,
+  listCallTranscriptActivities,
   registerCallTranscriptActivityType,
   unbindBitrixCallCardWidget,
   updateBitrixContact,
@@ -4560,6 +4562,163 @@ app.post("/bitrix/widgets/call-transcripts/seed", async (req: Request, res: Resp
       ok: false,
       error: error instanceof Error ? error.message : "Call transcript seed failed"
     });
+  }
+});
+
+app.post("/bitrix/widgets/deal-call-transcripts/register", async (_req: Request, res: Response) => {
+  try {
+    const dealCallTranscriptsWidgetBind = await bindBitrixDealCallTranscriptsWidget();
+    return res.status(200).json({ ok: true, dealCallTranscriptsWidgetBind });
+  } catch (error) {
+    console.error("Failed to bind Bitrix call transcripts widget", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Bitrix call transcripts widget bind failed"
+    });
+  }
+});
+
+type CallTranscriptListItem = {
+  id: string;
+  direction: "inbound" | "outbound";
+  text: string;
+  at: string;
+};
+
+function mapActivityRecordsToTranscriptItems(records: Array<Record<string, unknown>>): CallTranscriptListItem[] {
+  const seenIds = new Set<string>();
+  const items: CallTranscriptListItem[] = [];
+
+  for (const record of records) {
+    const id = String(record.ID ?? "");
+    if (!id || seenIds.has(id)) {
+      continue;
+    }
+    seenIds.add(id);
+
+    const text = String(record.DESCRIPTION ?? "").trim();
+    if (!text) {
+      continue;
+    }
+
+    items.push({
+      id,
+      direction: String(record.DIRECTION ?? "") === "2" ? "outbound" : "inbound",
+      text,
+      at: String(record.START_TIME ?? record.CREATED ?? "")
+    });
+  }
+
+  return items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+}
+
+function renderDealCallTranscriptsHtml(params: {
+  dealId: string;
+  dealTitle: string;
+  items: CallTranscriptListItem[];
+  error?: string;
+}): string {
+  let lastDateKey = "";
+  const rows = params.items.map((item) => {
+    const dateObj = new Date(item.at);
+    const dateKey = dateObj.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+    const time = dateObj.toLocaleTimeString("en-CA", { hour: "2-digit", minute: "2-digit" });
+    const separator = dateKey !== lastDateKey ? `<div class="dateSep"><span>${escapeHtml(dateKey)}</span></div>` : "";
+    lastDateKey = dateKey;
+    const isOutbound = item.direction === "outbound";
+    return `${separator}<div class="msg ${isOutbound ? "out" : "in"}"><div class="callBadge">${isOutbound ? "Outbound call" : "Inbound call"}</div><div class="bubble">${escapeHtml(item.text)}</div><div class="ts">${time}</div></div>`;
+  }).join("");
+
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Call Transcripts</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body { margin: 0; padding: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; background: #f6f8fb; color: #1a1a1a; }
+      .header { margin-bottom: 10px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+      .header h1 { font-size: 15px; margin: 0 0 2px; }
+      .header .sub { color: #667085; font-size: 12px; overflow-wrap: anywhere; }
+      .badge { flex: 0 0 auto; border: 1px solid #bfdbfe; color: #175cd3; background: #eff6ff; border-radius: 999px; padding: 4px 8px; font-size: 11px; }
+      .refresh { color: #0b66ff; font-size: 12px; text-decoration: none; font-weight: 600; }
+      .thread { display: flex; flex-direction: column; gap: 4px; background: #fff; border: 1px solid #dfe5ef; border-radius: 10px; padding: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }
+      .dateSep { display: flex; justify-content: center; margin: 10px 0 6px; }
+      .dateSep span { background: #eaeef4; color: #667085; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+      .msg { display: flex; flex-direction: column; max-width: 80%; margin-top: 2px; }
+      .msg.out { align-self: flex-end; align-items: flex-end; }
+      .msg.in { align-self: flex-start; align-items: flex-start; }
+      .callBadge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #98a2b3; margin-bottom: 3px; padding: 0 4px; }
+      .bubble { padding: 8px 11px; border-radius: 14px; line-height: 1.4; word-break: break-word; white-space: pre-wrap; }
+      .out .bubble { background: #0b66ff; color: #fff; border-bottom-right-radius: 4px; }
+      .in .bubble { background: #f6f8fb; border: 1px solid #dfe5ef; border-bottom-left-radius: 4px; }
+      .ts { font-size: 10px; color: #99a0ad; margin-top: 2px; padding: 0 4px; }
+      .empty { color: #667085; font-size: 13px; padding: 8px 0; text-align: center; }
+      .error { color: #b42318; background: #fffbfa; border: 1px solid #fecdca; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>Call Transcripts</h1>
+        <div class="sub">${params.dealTitle ? escapeHtml(params.dealTitle) : "No transcripts loaded yet"} · <a class="refresh" href="javascript:window.location.reload()">Refresh</a></div>
+      </div>
+      ${params.dealId ? `<div class="badge">Deal ${escapeHtml(params.dealId)}</div>` : ""}
+    </div>
+
+    ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
+
+    ${!params.error ? `
+      <div class="thread">
+        ${params.items.length ? rows : `<div class="empty">No call transcripts yet for this deal.</div>`}
+      </div>
+    ` : ""}
+  </body>
+</html>`;
+}
+
+app.all("/bitrix/widgets/deal-call-transcripts", async (req: Request, res: Response) => {
+  const placementOptions = parsePlacementOptions({
+    PLACEMENT_OPTIONS: (req.body as Record<string, unknown>)?.PLACEMENT_OPTIONS ?? req.query.PLACEMENT_OPTIONS
+  });
+  const dealId = String(placementOptions.ID ?? req.query.dealId ?? "").trim();
+
+  if (!dealId) {
+    return res.status(200).send(renderDealCallTranscriptsHtml({
+      dealId: "",
+      dealTitle: "",
+      items: [],
+      error: "Missing deal ID from placement context."
+    }));
+  }
+
+  try {
+    const dealResponse = await getBitrixDealById(dealId);
+    const deal = (dealResponse.result ?? {}) as Record<string, unknown>;
+    const dealTitle = String(deal.TITLE ?? "").trim();
+    const contactId = normalizeBitrixEntityId(deal.CONTACT_ID);
+
+    const ownerQueries = [{ ownerTypeId: 2, ownerId: Number(dealId) }];
+    if (contactId) {
+      ownerQueries.push({ ownerTypeId: 3, ownerId: Number(contactId) });
+    }
+
+    const activityLists = await Promise.all(
+      ownerQueries.map((owner) => listCallTranscriptActivities(owner).catch(() => ({ result: [] })))
+    );
+    const records = activityLists.flatMap((response) => response.result ?? []);
+    const items = mapActivityRecordsToTranscriptItems(records);
+
+    return res.status(200).send(renderDealCallTranscriptsHtml({ dealId, dealTitle, items }));
+  } catch (error) {
+    console.error("Failed to render call transcripts widget", error);
+    return res.status(200).send(renderDealCallTranscriptsHtml({
+      dealId,
+      dealTitle: "",
+      items: [],
+      error: error instanceof Error ? error.message : "Call transcripts could not be loaded."
+    }));
   }
 });
 
