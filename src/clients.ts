@@ -485,8 +485,7 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
           ownerTypeId,
           crmEntityType: statistic.CRM_ENTITY_TYPE,
           crmEntityId: statistic.CRM_ENTITY_ID,
-          transcriptStatus: transcript.status,
-          transcriptReason: transcript.reason
+          rawTranscriptResponse: transcript
         })
       );
     }
@@ -512,6 +511,32 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
       statistic
     };
   }
+}
+
+const CALL_TRANSCRIPT_RETRY_DELAYS_MS = [15000, 45000];
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function runCallTranscriptPipelineWithRetry(params: { callId: string; eventName?: string }) {
+  let result = await processVoximplantCallTranscript(params);
+
+  for (const delayMs of CALL_TRANSCRIPT_RETRY_DELAYS_MS) {
+    if (!result.enabled || result.delivered) {
+      return result;
+    }
+
+    console.log(`[call-transcript] call ${params.callId}: not ready yet, retrying in ${delayMs}ms`);
+    await delay(delayMs);
+    result = await processVoximplantCallTranscript(params);
+  }
+
+  if (!result.delivered) {
+    console.warn(`[call-transcript] call ${params.callId}: giving up after retries`);
+  }
+
+  return result;
 }
 
 export async function bindBitrixDealPaymentWidget() {

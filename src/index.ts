@@ -20,7 +20,7 @@ import {
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
   createBitrixContact,
-  processVoximplantCallTranscript,
+  runCallTranscriptPipelineWithRetry,
   findBitrixDuplicatesByCommunication,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
@@ -91,6 +91,7 @@ app.use((req, res, next) => {
 const processedTelnyxEvents = new Set<string>();
 const processedBitrixMessageIds = new Set<string>();
 const processedQuotePresentedPaymentTriggers = new Set<string>();
+const processedBitrixCallEndEvents = new Set<string>();
 const processedDealCreateNotifications = new Set<string>();
 const phoneByChatId = new Map<string, string>();
 const phoneByUserId = new Map<string, string>();
@@ -5249,13 +5250,26 @@ app.post("/webhooks/bitrix/telephony", async (req: Request, res: Response) => {
 
   try {
     const balto = await handleBaltoBitrixTelephonyEvent(event);
-    const transcript =
-      eventName === "ONVOXIMPLANTCALLEND"
-        ? await processVoximplantCallTranscript({
-            callId: String(event.data?.CALL_ID ?? "").trim(),
-            eventName: event.event
-          })
-        : { enabled: false, delivered: false };
+
+    let transcript: { enabled: boolean; dispatched?: boolean; duplicate?: boolean } = { enabled: false };
+    if (eventName === "ONVOXIMPLANTCALLEND") {
+      const callId = String(event.data?.CALL_ID ?? "").trim();
+      if (!callId) {
+        transcript = { enabled: false };
+      } else if (isDuplicate(processedBitrixCallEndEvents, callId)) {
+        transcript = { enabled: true, duplicate: true };
+      } else {
+        transcript = { enabled: true, dispatched: true };
+        // Respond to Bitrix immediately; the transcript pipeline (with retries for
+        // audio that isn't uploaded yet) runs in the background.
+        runCallTranscriptPipelineWithRetry({ callId, eventName: event.event }).catch((error) => {
+          console.error("[call-transcript] background pipeline failed", {
+            callId,
+            error: error instanceof Error ? error.message : error
+          });
+        });
+      }
+    }
 
     return res.status(200).json({ ok: true, balto, transcript });
   } catch (error) {
