@@ -50,8 +50,6 @@ export const config = {
   baltoDataAccessKey: process.env.BALTO_DATA_ACCESS_KEY ?? "",
   baltoIntegrationName: process.env.BALTO_INTEGRATION_NAME ?? "telnyx_bitrix",
   baltoIdentifierType: process.env.BALTO_IDENTIFIER_TYPE ?? "email",
-  baltoDefaultAgentEmail: process.env.BALTO_DEFAULT_AGENT_EMAIL ?? "",
-  baltoDefaultVoipUserId: process.env.BALTO_DEFAULT_VOIP_USER_ID ?? "",
   baltoStartEventTypes: process.env.BALTO_START_EVENT_TYPES ?? "call.answered",
   baltoStopEventTypes: process.env.BALTO_STOP_EVENT_TYPES ?? "call.hangup,call.ended,call.rejected,call.declined,call.canceled,call.cancelled,call.failed,call.busy,call.no_answer",
   emailApiUrl: process.env.EMAIL_API_URL ?? "https://proofresponse.com/wp-json/email-api/v1/send",

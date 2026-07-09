@@ -481,30 +481,26 @@ function isBaltoTerminalCallEvent(eventType: string, payload: TelnyxCallPayload 
 }
 
 function resolveBaltoAgentIdentifier(metadata: Record<string, unknown>) {
-  const email = (
-    readStringFromRecord(metadata, [
-      "email",
-      "agent_email",
-      "agentEmail",
-      "user_email",
-      "userEmail",
-      "bitrix_user_email",
-      "bitrixUserEmail"
-    ]) || config.baltoDefaultAgentEmail
-  ).trim();
+  const email = readStringFromRecord(metadata, [
+    "email",
+    "agent_email",
+    "agentEmail",
+    "user_email",
+    "userEmail",
+    "bitrix_user_email",
+    "bitrixUserEmail"
+  ]);
 
-  const voipUserId = (
-    readStringFromRecord(metadata, [
-      "voip_user_id",
-      "voipUserId",
-      "agent_id",
-      "agentId",
-      "user_id",
-      "userId",
-      "bitrix_user_id",
-      "bitrixUserId"
-    ]) || config.baltoDefaultVoipUserId
-  ).trim();
+  const voipUserId = readStringFromRecord(metadata, [
+    "voip_user_id",
+    "voipUserId",
+    "agent_id",
+    "agentId",
+    "user_id",
+    "userId",
+    "bitrix_user_id",
+    "bitrixUserId"
+  ]);
 
   if (config.baltoIdentifierType.toLowerCase() === "voip_user_id") {
     return { email: "", voipUserId };
@@ -570,7 +566,9 @@ function buildBaltoCallContext(body: TelnyxWebhook, record: TelnyxWebhookRecord)
     direction ||
     "telnyx_call";
   const { email: metaEmail, voipUserId } = resolveBaltoAgentIdentifier(metadata);
-  // If metadata had no agent email, check the call card map populated when Bitrix opened the widget.
+  // If metadata had no agent email, check the call card map populated when Bitrix opened the widget
+  // for the actual ringing/answering agent (see /bitrix/widgets/call-card). No default fallback —
+  // if the real agent can't be resolved, Balto simply doesn't start for this call.
   const callAgent = phoneNumber ? findCallAgentByPhone(phoneNumber) : undefined;
   const email = metaEmail || callAgent?.agentEmail || "";
 
@@ -637,7 +635,7 @@ async function handleBaltoTelnyxCallEvent(body: TelnyxWebhook, record: TelnyxWeb
       voipCallId: context.voipCallId,
       voipCustomerId: context.voipCustomerId,
       voipCampaignName: context.voipCampaignName,
-      lastError: "Missing Balto agent email or voip_user_id. Provide metadata or BALTO_DEFAULT_AGENT_EMAIL/BALTO_DEFAULT_VOIP_USER_ID.",
+      lastError: "Missing Balto agent email or voip_user_id. Could not resolve the real agent from call metadata or the call-card cache.",
       rawStartEvent: shouldStart ? body : undefined,
       rawStopEvent: shouldStop ? body : undefined
     });
@@ -856,11 +854,7 @@ async function handleBaltoBitrixTelephonyEvent(body: BitrixTelephonyEvent) {
     ? { email }
     : existing?.agentEmail
       ? { email: existing.agentEmail }
-      : config.baltoDefaultAgentEmail
-        ? { email: config.baltoDefaultAgentEmail }
-        : config.baltoDefaultVoipUserId
-          ? { voip_user_id: config.baltoDefaultVoipUserId }
-          : {};
+      : {};
 
   if (eventName === "ONVOXIMPLANTCALLSTART") {
     if (!("email" in identifier) && !("voip_user_id" in identifier)) {
@@ -874,7 +868,7 @@ async function handleBaltoBitrixTelephonyEvent(body: BitrixTelephonyEvent) {
         voipCallId: callId,
         voipCustomerId: phoneNumber || undefined,
         voipCampaignName,
-        lastError: "Missing Bitrix agent email for Balto start. Ensure the Bitrix user has an email or configure BALTO_DEFAULT_AGENT_EMAIL.",
+        lastError: "Missing Bitrix agent email for Balto start. Ensure the Bitrix user (PORTAL_USER_ID) has an email set.",
         rawStartEvent: body
       });
       return { enabled: true, action: "start_failed", error: "missing_agent_identifier", bitrixCallId: callId };
@@ -951,7 +945,7 @@ async function handleBaltoBitrixTelephonyEvent(body: BitrixTelephonyEvent) {
       voipCallId: callId,
       voipCustomerId: phoneNumber || existing?.voipCustomerId,
       voipCampaignName: voipCampaignName || existing?.voipCampaignName,
-      lastError: "Missing Bitrix agent email for Balto stop. Ensure the Bitrix user has an email or configure BALTO_DEFAULT_AGENT_EMAIL.",
+      lastError: "Missing Bitrix agent email for Balto stop. Ensure the Bitrix user (PORTAL_USER_ID) has an email set.",
       rawStopEvent: body
     });
     return { enabled: true, action: "stop_failed", error: "missing_agent_identifier", bitrixCallId: callId };

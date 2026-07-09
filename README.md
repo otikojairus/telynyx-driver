@@ -601,8 +601,8 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 - `BALTO_AUTO_START_TOKEN`: Balto Start/Stop API token.
 - `BALTO_DATA_ACCESS_KEY`: Balto Call Data API key.
 - `BALTO_IDENTIFIER_TYPE`: `email` or `voip_user_id`; controls which Balto Start/Stop endpoint is used.
-- `BALTO_DEFAULT_AGENT_EMAIL` / `BALTO_DEFAULT_VOIP_USER_ID`: Optional fallback agent identity.
 - `BALTO_START_EVENT_TYPES` / `BALTO_STOP_EVENT_TYPES`: Comma-separated Telnyx event names that trigger Balto start/stop. Balto start is still guarded so ringing/initiated events cannot start a desktop call.
+- Agent identity for Balto start/stop is always resolved automatically per call — from Telnyx call metadata if present, otherwise from the call-card cache populated when Bitrix opens `/bitrix/widgets/call-card` for the ringing/answering agent (looked up via `getBitrixUserById`). There is no default/fallback agent: if the real agent can't be resolved, Balto simply isn't started for that call (recorded as `start_failed` / `missing_agent_identifier` in `/debug/balto/call-sessions`) rather than risk coaching the wrong person.
 - `BITRIX_DEAL_FORWARD_WEBHOOK_URL`: Forwards stored Bitrix deal webhook events to your endpoint.
 - `CALL_TRANSCRIPT_API_URL` (optional, defaults to the Proof360 call-pipeline webhook): When Bitrix emits `OnVoximplantCallEnd`, the app looks up the matching call statistic, POSTs `{ contact_id, full_name, phone, customData: { ghl_call_id, audio_url, call_start, call_end, direction, agent_name } }` to this endpoint, and if a `transcription_text` comes back, creates a "Call Transcript" activity on the CRM entity the call was linked to (contact/lead/company/deal).
 - `BITRIX_DEAL_CLIENT_PRICE_FIELD` (optional): Bitrix deal field code where final client-facing price is stored.
