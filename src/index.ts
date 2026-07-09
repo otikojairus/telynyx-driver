@@ -3358,11 +3358,17 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     selectedFromNumber: string;
     error?: string;
   }): string {
+    let lastDateKey = "";
     const rows = params.messages.map((m) => {
       const isMine = m.direction === "outbound";
-      const time = new Date(m.at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-      return `<div class="msg ${isMine ? "out" : "in"}"><div class="bubble">${escapeHtml(m.text)}</div><div class="ts">${time}</div></div>`;
+      const dateObj = new Date(m.at);
+      const dateKey = dateObj.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+      const time = dateObj.toLocaleTimeString("en-CA", { hour: "2-digit", minute: "2-digit" });
+      const separator = dateKey !== lastDateKey ? `<div class="dateSep"><span>${escapeHtml(dateKey)}</span></div>` : "";
+      lastDateKey = dateKey;
+      return `${separator}<div class="msg ${isMine ? "out" : "in"}"><div class="bubble">${escapeHtml(m.text)}</div><div class="ts">${time}</div></div>`;
     }).join("");
+    const threadInner = params.messages.length ? rows : `<div class="empty">No SMS history found for this number. Send a message to start the conversation.</div>`;
 
     return `<!DOCTYPE html>
 <html>
@@ -3382,26 +3388,36 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
       label { display: block; color: #344054; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
       input, textarea, select { display: block; width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.4; color: #101828; background: #fff; }
       input:focus, textarea:focus, select:focus { outline: 2px solid #bfdbfe; border-color: #60a5fa; }
-      textarea { min-height: 76px; resize: vertical; }
       button { min-height: 36px; border: 0; border-radius: 7px; background: #0b66ff; color: #fff; font-weight: 600; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
       button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
-      .status { color: #667085; font-size: 12px; min-height: 16px; overflow-wrap: anywhere; }
+      .status { color: #667085; font-size: 12px; min-height: 16px; overflow-wrap: anywhere; padding: 0 2px; }
       .status.ok { color: #067647; }
       .status.err { color: #b42318; }
-      .thread { display: flex; flex-direction: column; gap: 6px; }
-      .msg { display: flex; flex-direction: column; max-width: 80%; }
+      .error { color: #b42318; background: #fffbfa; border: 1px solid #fecdca; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+      .chatPanel { background: #fff; border: 1px solid #dfe5ef; border-radius: 10px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); display: flex; flex-direction: column; overflow: hidden; }
+      .thread { flex: 1 1 auto; overflow-y: auto; min-height: 220px; max-height: 460px; padding: 12px; display: flex; flex-direction: column; gap: 4px; background: #f6f8fb; scroll-behavior: smooth; }
+      .dateSep { display: flex; justify-content: center; margin: 10px 0 6px; }
+      .dateSep span { background: #eaeef4; color: #667085; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+      .msg { display: flex; flex-direction: column; max-width: 80%; margin-top: 2px; }
       .msg.out { align-self: flex-end; align-items: flex-end; }
       .msg.in { align-self: flex-start; align-items: flex-start; }
-      .bubble { padding: 8px 11px; border-radius: 14px; line-height: 1.4; word-break: break-word; }
+      .bubble { padding: 8px 11px; border-radius: 14px; line-height: 1.4; word-break: break-word; white-space: pre-wrap; }
       .out .bubble { background: #0b66ff; color: #fff; border-bottom-right-radius: 4px; }
       .in .bubble { background: #fff; border: 1px solid #dfe5ef; border-bottom-left-radius: 4px; }
       .ts { font-size: 10px; color: #99a0ad; margin-top: 2px; padding: 0 4px; }
-      .empty { color: #667085; font-size: 13px; padding: 8px 0; }
-      .error { color: #b42318; background: #fffbfa; border: 1px solid #fecdca; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+      .msg.pending .bubble { opacity: 0.6; }
+      .msg.pending .ts { color: #99a0ad; }
+      .msg.failed .bubble { background: #fff; border: 1px solid #fecdca; color: #b42318; }
+      .msg.failed .ts { color: #b42318; }
+      .empty { color: #667085; font-size: 13px; padding: 8px 0; margin: auto; text-align: center; }
+      .composer { border-top: 1px solid #dfe5ef; background: #fff; padding: 8px 10px; }
+      .composerTop { margin-bottom: 6px; }
+      .composerTop select { font-size: 12px; padding: 5px 8px; }
+      .composerRow { display: flex; gap: 8px; align-items: flex-end; }
+      #smsText { flex: 1 1 auto; resize: none; min-height: 38px; max-height: 120px; overflow-y: auto; border-radius: 18px; padding: 9px 14px; }
+      .composerRow button { border-radius: 18px; flex: 0 0 auto; }
       @media (max-width: 420px) {
         .lookup { grid-template-columns: 1fr; }
-        button { width: 100%; }
       }
     </style>
   </head>
@@ -3426,30 +3442,85 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
     ${params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : ""}
 
     ${params.phone && !params.error ? `
-      <form class="panel" id="composeSmsForm">
-        <div style="margin-bottom: 8px;">
-          <label for="fromNumber">Send from</label>
-          <select id="fromNumber" name="fromNumber">
-            ${params.senderOptions.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === params.selectedFromNumber ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-          </select>
-        </div>
-        <label for="smsText">Message</label>
-        <textarea id="smsText" maxlength="1000" placeholder="Type an SMS to ${escapeHtml(params.phone)}"></textarea>
-        <div class="actions">
-          <button id="sendBtn" type="submit">Send SMS</button>
+      <div class="chatPanel">
+        <div class="thread" id="thread">${threadInner}</div>
+        <form class="composer" id="composeSmsForm">
+          <div class="composerTop">
+            <select id="fromNumber" name="fromNumber">
+              ${params.senderOptions.map((option) => `<option value="${escapeHtml(option.value)}"${option.value === params.selectedFromNumber ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="composerRow">
+            <textarea id="smsText" rows="1" maxlength="1000" placeholder="Message ${escapeHtml(params.phone)}"></textarea>
+            <button id="sendBtn" type="submit">Send</button>
+          </div>
           <div class="status" id="sendStatus"></div>
-        </div>
-      </form>
-      ${params.messages.length ? `<div class="thread">${rows}</div>` : `<div class="empty">No SMS history found for this number. Send a message to start the conversation.</div>`}
+        </form>
+      </div>
     ` : ""}
 
     ${params.phone && !params.error ? `
       <script>
+        const DEAL_ID = ${JSON.stringify(params.dealId)};
+        const PHONE = ${JSON.stringify(params.phone)};
+
+        const thread = document.getElementById("thread");
         const form = document.getElementById("composeSmsForm");
         const fromNumber = document.getElementById("fromNumber");
         const text = document.getElementById("smsText");
         const button = document.getElementById("sendBtn");
         const status = document.getElementById("sendStatus");
+
+        function scrollThreadToBottom() {
+          thread.scrollTop = thread.scrollHeight;
+        }
+        scrollThreadToBottom();
+
+        function autoGrow() {
+          text.style.height = "auto";
+          text.style.height = Math.min(text.scrollHeight, 120) + "px";
+        }
+        text.addEventListener("input", autoGrow);
+        text.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            form.requestSubmit();
+          }
+        });
+
+        function appendPendingBubble(messageText) {
+          const emptyEl = thread.querySelector(".empty");
+          if (emptyEl) {
+            emptyEl.remove();
+          }
+          const wrap = document.createElement("div");
+          wrap.className = "msg out pending";
+          const bubble = document.createElement("div");
+          bubble.className = "bubble";
+          bubble.textContent = messageText;
+          const ts = document.createElement("div");
+          ts.className = "ts";
+          ts.textContent = "Sending…";
+          wrap.appendChild(bubble);
+          wrap.appendChild(ts);
+          thread.appendChild(wrap);
+          scrollThreadToBottom();
+          return wrap;
+        }
+
+        async function refreshThread() {
+          const url = new URL(window.location.pathname, window.location.origin);
+          url.searchParams.set("dealId", DEAL_ID);
+          url.searchParams.set("phone", PHONE);
+          url.searchParams.set("fromNumber", fromNumber.value);
+          const response = await fetch(url.toString());
+          const html = await response.text();
+          const freshThread = new DOMParser().parseFromString(html, "text/html").getElementById("thread");
+          if (freshThread) {
+            thread.innerHTML = freshThread.innerHTML;
+            scrollThreadToBottom();
+          }
+        }
 
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
@@ -3462,7 +3533,10 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
 
           button.disabled = true;
           status.className = "status";
-          status.textContent = "Sending...";
+          status.textContent = "";
+          const pendingBubble = appendPendingBubble(message);
+          text.value = "";
+          autoGrow();
 
           try {
             const response = await fetch("/bitrix/widgets/deal-compose-sms/send", {
@@ -3472,8 +3546,8 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
                 "x-inbound-secret": ${JSON.stringify(config.inboundDealWebhookSecret)}
               },
               body: JSON.stringify({
-                dealId: ${JSON.stringify(params.dealId)},
-                phone: ${JSON.stringify(params.phone)},
+                dealId: DEAL_ID,
+                phone: PHONE,
                 fromNumber: fromNumber.value,
                 text: message
               })
@@ -3482,19 +3556,16 @@ app.all("/bitrix/widgets/deal-compose-sms", async (req: Request, res: Response) 
             if (!response.ok || !json.ok) {
               throw new Error(json.error || "SMS send failed");
             }
-            status.className = "status ok";
-            status.textContent = "Sent.";
-            text.value = "";
-            window.setTimeout(() => {
-              const next = new URL("/bitrix/widgets/deal-compose-sms", window.location.origin);
-              next.searchParams.set("dealId", ${JSON.stringify(params.dealId)});
-              next.searchParams.set("phone", ${JSON.stringify(params.phone)});
-              next.searchParams.set("fromNumber", fromNumber.value);
-              window.location.href = next.toString();
-            }, 700);
+            await refreshThread();
           } catch (error) {
+            pendingBubble.classList.remove("pending");
+            pendingBubble.classList.add("failed");
+            pendingBubble.querySelector(".ts").textContent = "Failed to send";
             status.className = "status err";
             status.textContent = error?.message || "SMS send failed";
+            text.value = message;
+            autoGrow();
+          } finally {
             button.disabled = false;
           }
         });

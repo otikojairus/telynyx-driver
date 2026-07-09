@@ -150,6 +150,7 @@ export async function listTelnyxSmsRecordsByPhone(phone: string, limit = 50): Pr
         outbound_forward
       FROM telnyx_webhooks
       WHERE event_channel = 'sms'
+        AND status IN ('forwarded_to_bitrix', 'sent_from_bitrix_deal')
         AND (phone_from = $1 OR phone_to = $1)
       ORDER BY received_at ASC
       LIMIT $2
