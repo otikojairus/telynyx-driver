@@ -33,7 +33,9 @@ export const config = {
   bitrixQuotePresentedStageId: process.env.BITRIX_QUOTE_PRESENTED_STAGE_ID ?? "",
   bitrixQuotePresentedPaymentType: process.env.BITRIX_QUOTE_PRESENTED_PAYMENT_TYPE ?? "deposit",
   bitrixDealForwardWebhookUrl: process.env.BITRIX_DEAL_FORWARD_WEBHOOK_URL ?? "",
-  bitrixCallRecordingForwardWebhookUrl: process.env.BITRIX_CALL_RECORDING_FORWARD_WEBHOOK_URL ?? "",
+  callTranscriptApiUrl:
+    process.env.CALL_TRANSCRIPT_API_URL ??
+    "https://proof360-integration-hub-204640591480.northamerica-northeast2.run.app/api/v1/call-pipeline/webhook",
   dataDir: process.env.DATA_DIR ?? "data",
   telnyxNumbersCsvPath: process.env.TELNYX_NUMBERS_CSV_PATH ?? "numbers.csv",
   telnyxApiKey: requireEnv("TELNYX_API_KEY"),

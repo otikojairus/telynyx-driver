@@ -20,7 +20,7 @@ import {
   bindBitrixConnectorEvents,
   bindBitrixDealPaymentWidget,
   createBitrixContact,
-  forwardBitrixCallRecording,
+  processVoximplantCallTranscript,
   findBitrixDuplicatesByCommunication,
   markBitrixAppInstalled,
   findBitrixUserByEmail,
@@ -42,6 +42,8 @@ import {
   sendToBitrixOpenChannel,
   bindBitrixCallCardWidget,
   createBitrixDeal,
+  createCallTranscriptActivity,
+  registerCallTranscriptActivityType,
   unbindBitrixCallCardWidget,
   updateBitrixContact,
   updateBitrixDealFields,
@@ -4263,6 +4265,76 @@ app.post("/bitrix/widgets/available-vendors/register", async (_req: Request, res
   }
 });
 
+app.post("/bitrix/widgets/call-transcripts/register", async (_req: Request, res: Response) => {
+  try {
+    const callTranscriptActivityType = await registerCallTranscriptActivityType();
+    return res.status(callTranscriptActivityType.ok ? 200 : 500).json({
+      ok: callTranscriptActivityType.ok,
+      callTranscriptActivityType
+    });
+  } catch (error) {
+    console.error("Failed to register call transcript activity type", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Call transcript activity type registration failed"
+    });
+  }
+});
+
+function fetchDummyCallTranscripts(dealId: string) {
+  const now = Date.now();
+  return [
+    {
+      subject: "Inbound call transcript",
+      transcript:
+        "Agent: Thanks for calling, this is Alex, how can I help?\n" +
+        "Customer: Hi, I wanted to follow up on the quote you sent last week.\n" +
+        "Agent: Sure, let me pull that up for you now.\n" +
+        `(dummy transcript for deal ${dealId} — replace with real transcript API data)`,
+      startTime: new Date(now - 60 * 60 * 1000).toISOString()
+    },
+    {
+      subject: "Outbound call transcript",
+      transcript:
+        "Agent: Hi, this is Alex calling back about your order.\n" +
+        "Customer: Yes, thanks for calling, I had a question about delivery.\n" +
+        `(dummy transcript for deal ${dealId} — replace with real transcript API data)`,
+      startTime: new Date(now - 15 * 60 * 1000).toISOString()
+    }
+  ];
+}
+
+app.post("/bitrix/widgets/call-transcripts/seed", async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+  const dealId = String(body?.dealId ?? req.query.dealId ?? "").trim();
+
+  if (!dealId) {
+    return res.status(400).json({ ok: false, error: "Missing dealId" });
+  }
+
+  try {
+    const transcripts = fetchDummyCallTranscripts(dealId);
+    const created = [];
+    for (const item of transcripts) {
+      const activity = await createCallTranscriptActivity({
+        ownerTypeId: 2,
+        ownerId: Number(dealId),
+        subject: item.subject,
+        transcript: item.transcript,
+        startTime: item.startTime
+      });
+      created.push(activity);
+    }
+    return res.status(200).json({ ok: true, dealId, created });
+  } catch (error) {
+    console.error("Failed to seed dummy call transcript activity", error);
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "Call transcript seed failed"
+    });
+  }
+});
+
 app.get("/bitrix/connector/status", async (_req: Request, res: Response) => {
   try {
     const status = await getBitrixConnectorStatus();
@@ -4950,15 +5022,15 @@ app.post("/webhooks/bitrix/telephony", async (req: Request, res: Response) => {
 
   try {
     const balto = await handleBaltoBitrixTelephonyEvent(event);
-    const recording =
+    const transcript =
       eventName === "ONVOXIMPLANTCALLEND"
-        ? await forwardBitrixCallRecording({
+        ? await processVoximplantCallTranscript({
             callId: String(event.data?.CALL_ID ?? "").trim(),
             eventName: event.event
           })
         : { enabled: false, delivered: false };
 
-    return res.status(200).json({ ok: true, balto, recording });
+    return res.status(200).json({ ok: true, balto, transcript });
   } catch (error) {
     console.error("Failed to handle Bitrix telephony Balto event", {
       event: event.event,

@@ -272,17 +272,14 @@ type BitrixCallStatisticRecord = {
   CALL_RECORD_URL?: string | null;
   RECORD_FILE_ID?: number | string | null;
   CRM_ACTIVITY_ID?: string | number | null;
+  CRM_ENTITY_TYPE?: string | null;
+  CRM_ENTITY_ID?: string | number | null;
+  PORTAL_USER_ID?: string | number | null;
   CALL_START_DATE?: string;
   PHONE_NUMBER?: string;
   CALL_TYPE?: string | number;
   CALL_DURATION?: string | number;
 };
-
-function guessRecordingFilename(record: BitrixCallStatisticRecord) {
-  const callId = String(record.CALL_ID ?? "").trim() || "bitrix-call";
-  const start = String(record.CALL_START_DATE ?? "").trim().replace(/[:.]/g, "-");
-  return `${callId}${start ? `-${start}` : ""}.mp3`;
-}
 
 async function fetchBitrixCallStatistic(callId: string) {
   const response = await callBitrixMethod<{ result?: BitrixCallStatisticRecord[] }>(
@@ -299,15 +296,120 @@ async function fetchBitrixCallStatistic(callId: string) {
   return response.result?.[0] ?? null;
 }
 
-export async function forwardBitrixCallRecording(params: {
+function mapCrmEntityTypeToOwnerTypeId(entityType?: string | null): number | null {
+  switch (String(entityType ?? "").toUpperCase()) {
+    case "LEAD":
+      return 1;
+    case "DEAL":
+      return 2;
+    case "CONTACT":
+      return 3;
+    case "COMPANY":
+      return 4;
+    default:
+      return null;
+  }
+}
+
+function mapVoximplantCallTypeToDirection(callType?: string | number | null): "inbound" | "outbound" | undefined {
+  const value = String(callType ?? "");
+  if (value === "1" || value === "4") {
+    return "outbound";
+  }
+  if (value === "2" || value === "3") {
+    return "inbound";
+  }
+  return undefined;
+}
+
+async function resolveCallContactName(entityType?: string | null, entityId?: string | number | null): Promise<string> {
+  if (String(entityType ?? "").toUpperCase() !== "CONTACT" || !entityId) {
+    return "";
+  }
+
+  try {
+    const response = await getBitrixContactById(String(entityId));
+    const contact = response.result as Record<string, unknown> | undefined;
+    if (!contact) {
+      return "";
+    }
+    return [contact.NAME, contact.LAST_NAME].filter(Boolean).join(" ").trim();
+  } catch (error) {
+    console.warn("Failed to resolve call contact name", describeAxiosError(error));
+    return "";
+  }
+}
+
+async function resolveCallAgentName(userId?: string | number | null): Promise<string> {
+  if (!userId) {
+    return "";
+  }
+
+  try {
+    const response = await getBitrixUserById(String(userId));
+    const user = response.result?.[0];
+    if (!user) {
+      return "";
+    }
+    return [user.NAME, user.LAST_NAME].filter(Boolean).join(" ").trim();
+  } catch (error) {
+    console.warn("Failed to resolve call agent name", describeAxiosError(error));
+    return "";
+  }
+}
+
+type CallTranscriptApiResponse = {
+  status?: string;
+  reason?: string;
+  details?: string;
+  transcript_record_id?: string;
+  local_id?: string;
+  ghl_call_id?: string;
+  transcription_text?: string;
+  process_steps?: Array<{ step?: string; start_time?: string; end_time?: string; duration_ms?: number }>;
+  total_processing_time_ms?: number;
+};
+
+export async function fetchCallTranscript(params: {
   callId: string;
-  eventName?: string;
-}) {
-  if (!config.bitrixCallRecordingForwardWebhookUrl) {
-    return {
-      enabled: false,
-      delivered: false
-    };
+  audioUrl: string;
+  contactId?: string;
+  fullName?: string;
+  phone?: string;
+  callStart?: string;
+  callEnd?: string;
+  direction?: "inbound" | "outbound";
+  agentName?: string;
+}): Promise<CallTranscriptApiResponse> {
+  const response = await fetch(config.callTranscriptApiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contact_id: params.contactId ?? "",
+      full_name: params.fullName ?? "",
+      phone: params.phone ?? "",
+      customData: {
+        ghl_call_id: params.callId,
+        audio_url: params.audioUrl,
+        call_start: params.callStart ?? "",
+        call_end: params.callEnd ?? "",
+        direction: params.direction ?? "",
+        agent_name: params.agentName ?? ""
+      }
+    })
+  });
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Call transcript API HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body as CallTranscriptApiResponse;
+}
+
+export async function processVoximplantCallTranscript(params: { callId: string; eventName?: string }) {
+  if (!config.callTranscriptApiUrl) {
+    return { enabled: false, delivered: false };
   }
 
   const statistic = await fetchBitrixCallStatistic(params.callId);
@@ -320,8 +422,8 @@ export async function forwardBitrixCallRecording(params: {
     };
   }
 
-  const recordingUrl = String(statistic.CALL_RECORD_URL ?? "").trim();
-  if (!recordingUrl) {
+  const audioUrl = String(statistic.CALL_RECORD_URL ?? "").trim();
+  if (!audioUrl) {
     return {
       enabled: true,
       delivered: false,
@@ -331,52 +433,57 @@ export async function forwardBitrixCallRecording(params: {
     };
   }
 
-  const recordingResponse = await fetch(recordingUrl);
-  if (!recordingResponse.ok) {
-    return {
-      enabled: true,
-      delivered: false,
-      error: `failed to fetch recording: ${recordingResponse.status}`,
-      attemptedAt: new Date().toISOString(),
-      statistic
-    };
-  }
+  const durationSeconds = Number(statistic.CALL_DURATION ?? 0) || 0;
+  const callStart = String(statistic.CALL_START_DATE ?? "").trim();
+  const callStartMs = callStart ? new Date(callStart).getTime() : NaN;
+  const callEnd = Number.isFinite(callStartMs) ? new Date(callStartMs + durationSeconds * 1000).toISOString() : "";
+  const direction = mapVoximplantCallTypeToDirection(statistic.CALL_TYPE);
 
-  const contentType = recordingResponse.headers.get("content-type") ?? "audio/mpeg";
-  const contentDisposition = recordingResponse.headers.get("content-disposition") ?? "";
-  const buffer = Buffer.from(await recordingResponse.arrayBuffer());
-  const filename = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1] ?? guessRecordingFilename(statistic);
-  const form = new FormData();
-  form.append("source", "bitrix-call-recording");
-  form.append("call_id", params.callId);
-  form.append("event_name", params.eventName ?? "OnVoximplantCallEnd");
-  form.append("recording_url", recordingUrl);
-  form.append("crm_activity_id", String(statistic.CRM_ACTIVITY_ID ?? ""));
-  form.append("phone_number", String(statistic.PHONE_NUMBER ?? ""));
-  form.append("call_type", String(statistic.CALL_TYPE ?? ""));
-  form.append("call_duration", String(statistic.CALL_DURATION ?? ""));
-  form.append("recording", new Blob([buffer], { type: contentType }), filename);
+  const [contactName, agentName] = await Promise.all([
+    resolveCallContactName(statistic.CRM_ENTITY_TYPE, statistic.CRM_ENTITY_ID),
+    resolveCallAgentName(statistic.PORTAL_USER_ID)
+  ]);
 
   try {
-    const response = await fetch(config.bitrixCallRecordingForwardWebhookUrl, {
-      method: "POST",
-      body: form
+    const transcript = await fetchCallTranscript({
+      callId: params.callId,
+      audioUrl,
+      contactId: String(statistic.CRM_ENTITY_TYPE ?? "").toUpperCase() === "CONTACT" ? String(statistic.CRM_ENTITY_ID ?? "") : "",
+      fullName: contactName,
+      phone: String(statistic.PHONE_NUMBER ?? ""),
+      callStart,
+      callEnd,
+      direction,
+      agentName
     });
+
+    const transcriptText = String(transcript.transcription_text ?? "").trim();
+    const ownerTypeId = mapCrmEntityTypeToOwnerTypeId(statistic.CRM_ENTITY_TYPE);
+
+    let activity: unknown = null;
+    if (transcriptText && ownerTypeId && statistic.CRM_ENTITY_ID) {
+      activity = await createCallTranscriptActivity({
+        ownerTypeId,
+        ownerId: Number(statistic.CRM_ENTITY_ID),
+        subject: `${direction === "outbound" ? "Outbound" : "Inbound"} call transcript`,
+        transcript: transcriptText,
+        startTime: callStart || undefined
+      });
+    }
 
     return {
       enabled: true,
-      delivered: response.ok,
-      url: config.bitrixCallRecordingForwardWebhookUrl,
-      statusCode: response.status,
+      delivered: Boolean(transcriptText),
       attemptedAt: new Date().toISOString(),
-      statistic
+      statistic,
+      transcript,
+      activity
     };
   } catch (error) {
     return {
       enabled: true,
       delivered: false,
-      url: config.bitrixCallRecordingForwardWebhookUrl,
-      error: error instanceof Error ? error.message : "Unknown recording forward error",
+      error: error instanceof Error ? error.message : "Unknown call transcript error",
       attemptedAt: new Date().toISOString(),
       statistic
     };
@@ -645,6 +752,59 @@ export async function bindBitrixCallCardWidget() {
       error: error instanceof Error ? error.message : "Placement bind failed"
     };
   }
+}
+
+const CALL_TRANSCRIPT_PROVIDER_TYPE_ID = "TELYNX_CALL_TRANSCRIPT";
+const CRM_OWNER_TYPE_DEAL = 2;
+const CRM_ACTIVITY_TYPE_PROVIDER = 6;
+
+export async function registerCallTranscriptActivityType() {
+  try {
+    const result = await callBitrixMethod("crm.activity.type.add", {
+      fields: {
+        TYPE_ID: CALL_TRANSCRIPT_PROVIDER_TYPE_ID,
+        NAME: "Call Transcript"
+      }
+    });
+    return { ok: true, typeId: CALL_TRANSCRIPT_PROVIDER_TYPE_ID, result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/exist/i.test(message)) {
+      return { ok: true, typeId: CALL_TRANSCRIPT_PROVIDER_TYPE_ID, alreadyRegistered: true };
+    }
+    return {
+      ok: false,
+      typeId: CALL_TRANSCRIPT_PROVIDER_TYPE_ID,
+      error: error instanceof Error ? error.message : "Activity type registration failed"
+    };
+  }
+}
+
+export async function createCallTranscriptActivity(params: {
+  ownerTypeId?: number;
+  ownerId: number;
+  subject: string;
+  transcript: string;
+  startTime?: string;
+  responsibleId?: number;
+}) {
+  return callBitrixMethod<{ result?: number }>("crm.activity.add", {
+    fields: {
+      OWNER_TYPE_ID: params.ownerTypeId ?? CRM_OWNER_TYPE_DEAL,
+      OWNER_ID: params.ownerId,
+      TYPE_ID: CRM_ACTIVITY_TYPE_PROVIDER,
+      PROVIDER_ID: "REST_APP",
+      PROVIDER_TYPE_ID: CALL_TRANSCRIPT_PROVIDER_TYPE_ID,
+      SUBJECT: params.subject,
+      DESCRIPTION: params.transcript,
+      DESCRIPTION_TYPE: 1,
+      COMPLETED: "Y",
+      DIRECTION: 2,
+      RESPONSIBLE_ID: params.responsibleId ?? 1,
+      START_TIME: params.startTime ?? new Date().toISOString(),
+      COMMUNICATIONS: []
+    }
+  });
 }
 
 export async function createBitrixDeal(fields: Record<string, unknown>) {
