@@ -158,6 +158,41 @@ export async function initializeDatabase(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_balto_call_sessions_status
     ON balto_call_sessions (status)
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS call_transcripts (
+      call_id TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      owner_type_id INTEGER,
+      owner_id BIGINT,
+      crm_entity_type TEXT,
+      crm_entity_id TEXT,
+      direction TEXT,
+      phone_number TEXT,
+      audio_url TEXT,
+      call_start TIMESTAMPTZ,
+      call_end TIMESTAMPTZ,
+      transcript_text TEXT,
+      transcript_record_id TEXT,
+      bitrix_activity_id TEXT,
+      last_error TEXT,
+      raw_transcript_response JSONB,
+      raw_statistic JSONB
+    )
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_call_transcripts_owner
+    ON call_transcripts (owner_type_id, owner_id)
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_call_transcripts_updated_at
+    ON call_transcripts (updated_at DESC)
+  `);
 }
 
 export async function queryDatabase<T extends QueryResultRow = QueryResultRow>(

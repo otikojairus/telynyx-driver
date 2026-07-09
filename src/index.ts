@@ -60,6 +60,7 @@ import {
   saveTelnyxWebhookRecord,
   TelnyxWebhookRecord
 } from "./telnyxWebhookStore";
+import { listRecentCallTranscriptRecords } from "./callTranscriptStore";
 import { canSendEmail, sendLeadConfirmationEmail } from "./notifications";
 import { writeBitrixTokens } from "./tokenStore";
 import {
@@ -4767,6 +4768,17 @@ app.get("/debug/telnyx/webhooks", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Failed to read stored Telnyx webhooks", error);
     return res.status(500).json({ ok: false, error: "Telnyx webhook history failed" });
+  }
+});
+
+app.get("/debug/call-transcripts", async (req: Request, res: Response) => {
+  const rawLimit = Number(req.query.limit ?? 50);
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
+  try {
+    return res.status(200).json({ ok: true, records: await listRecentCallTranscriptRecords(limit) });
+  } catch (error) {
+    console.error("Failed to read stored call transcripts", error);
+    return res.status(500).json({ ok: false, error: "Call transcript history failed" });
   }
 });
 

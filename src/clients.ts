@@ -1,6 +1,7 @@
 import axios from "axios";
 import { config } from "./config";
 import { readBitrixTokens, writeBitrixTokens } from "./tokenStore";
+import { saveCallTranscriptRecord } from "./callTranscriptStore";
 import { BitrixSendMessageResponse } from "./types";
 
 const telnyxClient = axios.create({
@@ -423,7 +424,31 @@ export async function fetchCallTranscript(params: {
   return body as CallTranscriptApiResponse;
 }
 
-export async function processVoximplantCallTranscript(params: { callId: string; eventName?: string }) {
+type CallTranscriptStatus =
+  | "activity_created"
+  | "no_transcript"
+  | "transcript_no_owner"
+  | "statistic_not_found"
+  | "recording_missing"
+  | "error";
+
+interface CallTranscriptProcessResult {
+  enabled: boolean;
+  delivered: boolean;
+  status?: CallTranscriptStatus;
+  error?: string;
+  attemptedAt?: string;
+  statistic?: BitrixCallStatisticRecord;
+  transcript?: CallTranscriptApiResponse;
+  activity?: { result?: number } | null;
+  ownerTypeId?: number | null;
+  direction?: "inbound" | "outbound";
+}
+
+export async function processVoximplantCallTranscript(params: {
+  callId: string;
+  eventName?: string;
+}): Promise<CallTranscriptProcessResult> {
   if (!config.callTranscriptApiUrl) {
     return { enabled: false, delivered: false };
   }
@@ -436,6 +461,7 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
     return {
       enabled: true,
       delivered: false,
+      status: "statistic_not_found",
       error: "call statistic not found",
       attemptedAt: new Date().toISOString()
     };
@@ -447,6 +473,7 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
     return {
       enabled: true,
       delivered: false,
+      status: "recording_missing",
       error: "recording url missing",
       attemptedAt: new Date().toISOString(),
       statistic
@@ -480,7 +507,7 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
     const transcriptText = String(transcript.transcription_text ?? "").trim();
     const ownerTypeId = mapCrmEntityTypeToOwnerTypeId(statistic.CRM_ENTITY_TYPE);
 
-    let activity: unknown = null;
+    let activity: { result?: number } | null = null;
     if (transcriptText && ownerTypeId && statistic.CRM_ENTITY_ID) {
       activity = await createCallTranscriptActivity({
         ownerTypeId,
@@ -510,10 +537,13 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
     return {
       enabled: true,
       delivered: Boolean(transcriptText),
+      status: activity ? "activity_created" : transcriptText ? "transcript_no_owner" : "no_transcript",
       attemptedAt: new Date().toISOString(),
       statistic,
       transcript,
-      activity
+      activity,
+      ownerTypeId,
+      direction
     };
   } catch (error) {
     console.error(
@@ -523,6 +553,7 @@ export async function processVoximplantCallTranscript(params: { callId: string; 
     return {
       enabled: true,
       delivered: false,
+      status: "error",
       error: error instanceof Error ? error.message : "Unknown call transcript error",
       attemptedAt: new Date().toISOString(),
       statistic
@@ -536,8 +567,45 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function persistCallTranscriptAttempt(
+  callId: string,
+  attempts: number,
+  result: CallTranscriptProcessResult
+): Promise<void> {
+  if (!result.enabled) {
+    return;
+  }
+
+  try {
+    await saveCallTranscriptRecord({
+      callId,
+      status: result.status ?? "error",
+      attempts,
+      ownerTypeId: result.ownerTypeId ?? null,
+      ownerId: result.statistic?.CRM_ENTITY_ID ? Number(result.statistic.CRM_ENTITY_ID) : null,
+      crmEntityType: result.statistic?.CRM_ENTITY_TYPE ?? null,
+      crmEntityId: result.statistic?.CRM_ENTITY_ID ? String(result.statistic.CRM_ENTITY_ID) : null,
+      direction: result.direction ?? null,
+      phoneNumber: result.statistic?.PHONE_NUMBER ?? null,
+      audioUrl: result.statistic?.CALL_RECORD_URL ?? null,
+      callStart: result.statistic?.CALL_START_DATE ?? null,
+      callEnd: null,
+      transcriptText: result.transcript?.transcription_text ?? null,
+      transcriptRecordId: result.transcript?.transcript_record_id ?? null,
+      bitrixActivityId: result.activity?.result ? String(result.activity.result) : null,
+      lastError: result.error ?? null,
+      rawTranscriptResponse: result.transcript ?? null,
+      rawStatistic: result.statistic ?? null
+    });
+  } catch (error) {
+    console.error(`[call-transcript] call ${callId}: failed to persist record`, describeAxiosError(error));
+  }
+}
+
 export async function runCallTranscriptPipelineWithRetry(params: { callId: string; eventName?: string }) {
+  let attempts = 1;
   let result = await processVoximplantCallTranscript(params);
+  await persistCallTranscriptAttempt(params.callId, attempts, result);
 
   for (const delayMs of CALL_TRANSCRIPT_RETRY_DELAYS_MS) {
     if (!result.enabled || result.delivered) {
@@ -546,7 +614,9 @@ export async function runCallTranscriptPipelineWithRetry(params: { callId: strin
 
     console.log(`[call-transcript] call ${params.callId}: not ready yet, retrying in ${delayMs}ms`);
     await delay(delayMs);
+    attempts += 1;
     result = await processVoximplantCallTranscript(params);
+    await persistCallTranscriptAttempt(params.callId, attempts, result);
   }
 
   if (!result.delivered) {
