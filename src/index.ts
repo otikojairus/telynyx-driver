@@ -1606,6 +1606,11 @@ type TelnyxSenderOption = {
   label: string;
 };
 
+const COMPOSE_SMS_SENDER_NUMBERS = [
+  "+18889750853",
+  "+18889701711"
+] as const;
+
 let cachedTelnyxSenderOptions: {
   csvPath: string;
   mtimeMs: number;
@@ -1619,78 +1624,28 @@ function resolveTelnyxNumbersCsvPath(): string {
 }
 
 function loadTelnyxSenderOptions(): TelnyxSenderOption[] {
-  const csvPath = resolveTelnyxNumbersCsvPath();
-
-  try {
-    const stat = fs.statSync(csvPath);
-    if (cachedTelnyxSenderOptions && cachedTelnyxSenderOptions.csvPath === csvPath && cachedTelnyxSenderOptions.mtimeMs === stat.mtimeMs) {
-      return cachedTelnyxSenderOptions.options;
-    }
-
-    const [headerLine, ...lines] = fs.readFileSync(csvPath, "utf8").split(/\r?\n/);
-    const headers = headerLine.split(",").map((header) => header.trim());
-    const numberIndex = headers.indexOf("number_val_e164");
-    const typeIndex = headers.indexOf("phone_number_type");
-    const statusIndex = headers.indexOf("status");
-
-    const options: TelnyxSenderOption[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-
-      const columns = trimmed.split(",");
-      const value = String(columns[numberIndex] ?? "").trim();
-      if (!value) {
-        continue;
-      }
-
-      const status = String(columns[statusIndex] ?? "").trim();
-      if (status && status.toLowerCase() !== "active") {
-        continue;
-      }
-
-      const type = String(columns[typeIndex] ?? "").trim();
-      options.push({
-        value,
-        label: type ? `${value} (${type})` : value
-      });
-    }
-
-    if (!options.some((option) => option.value === config.telnyxFromNumber)) {
-      options.unshift({
-        value: config.telnyxFromNumber,
-        label: `${config.telnyxFromNumber} (default)`
-      });
-    }
-
-    cachedTelnyxSenderOptions = {
-      csvPath,
-      mtimeMs: stat.mtimeMs,
-      options
-    };
-    return options;
-  } catch {
-    const fallbackOptions = [{
-      value: config.telnyxFromNumber,
-      label: `${config.telnyxFromNumber} (default)`
-    }];
-
-    cachedTelnyxSenderOptions = {
-      csvPath,
-      mtimeMs: 0,
-      options: fallbackOptions
-    };
-    return fallbackOptions;
+  if (cachedTelnyxSenderOptions) {
+    return cachedTelnyxSenderOptions.options;
   }
+
+  const options = COMPOSE_SMS_SENDER_NUMBERS.map((value) => ({
+    value,
+    label: value
+  }));
+
+  cachedTelnyxSenderOptions = {
+    csvPath: "compose-widget-allowed-sender-numbers",
+    mtimeMs: 0,
+    options
+  };
+  return options;
 }
 
 function resolveComposeSmsSenderNumber(requestedFromNumber?: string): string {
   const requested = String(requestedFromNumber ?? "").trim();
   const options = loadTelnyxSenderOptions();
   if (!requested) {
-    return options[0]?.value ?? config.telnyxFromNumber;
+    return options[0]?.value ?? "";
   }
 
   return options.find((option) => option.value === requested)?.value ?? "";
@@ -4968,18 +4923,25 @@ app.get("/admin/bitrix/import-contacts/:jobId", (req: Request, res: Response) =>
 });
 
 app.post("/sms/send", async (req: Request, res: Response) => {
-  const { to, text } = req.body as { to?: string; text?: string };
+  const { to, text, from } = req.body as { to?: string; text?: string; from?: string };
 
   if (!to || !text) {
     return res.status(400).json({ ok: false, error: "Missing to or text" });
   }
 
   try {
-    const telnyxResponse = await sendSmsThroughTelnyx({ to, text });
+    const telnyxResponse = await sendSmsThroughTelnyx({
+      to,
+      text,
+      from: typeof from === "string" && from.trim() ? from.trim() : undefined
+    });
     return res.status(200).json({ ok: true, telnyx: telnyxResponse });
   } catch (error) {
     console.error("Failed to send manual SMS through Telnyx", error);
-    return res.status(500).json({ ok: false, error: "SMS send failed" });
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : "SMS send failed"
+    });
   }
 });
 

@@ -1218,6 +1218,23 @@ export async function sendSmsThroughTelnyx(params: {
     text: params.text
   };
 
-  const response = await telnyxClient.post("/messages", body);
-  return response.data;
+  try {
+    const response = await telnyxClient.post("/messages", body);
+    return response.data;
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const details = error.response?.data;
+      const message =
+        details?.errors?.map((entry: { detail?: string; title?: string; code?: string }) =>
+          [entry.code, entry.title, entry.detail].filter(Boolean).join(": ")
+        ).filter(Boolean).join("; ") ||
+        error.message;
+
+      throw new Error(
+        `Telnyx SMS request failed with status ${error.response?.status ?? "unknown"}: ${message}`
+      );
+    }
+
+    throw error;
+  }
 }

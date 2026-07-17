@@ -230,6 +230,7 @@ Base URL: `https://<your-domain>` (local: `http://localhost:3000`)
 ```json
 {
   "to": "+2547XXXXXXXX",
+  "from": "+18447500107",
   "text": "Hello from middleware"
 }
 ```
@@ -645,6 +646,7 @@ curl -X POST http://localhost:3000/sms/send \
   -H "Content-Type: application/json" \
   -d '{
     "to": "+254722753364",
+    "from": "+18447500107",
     "text": "Hello from the middleware"
   }'
 ```
