@@ -1608,7 +1608,8 @@ type TelnyxSenderOption = {
 
 const COMPOSE_SMS_SENDER_NUMBERS = [
   "+18889750853",
-  "+18889701711"
+  "+18889701711",
+  "+12364293270"
 ] as const;
 
 let cachedTelnyxSenderOptions: {
@@ -1630,7 +1631,7 @@ function loadTelnyxSenderOptions(): TelnyxSenderOption[] {
 
   const options = COMPOSE_SMS_SENDER_NUMBERS.map((value) => ({
     value,
-    label: value
+    label: value === "+12364293270" ? "QUEBEC" : value
   }));
 
   cachedTelnyxSenderOptions = {
